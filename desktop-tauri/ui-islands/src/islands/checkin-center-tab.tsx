@@ -632,6 +632,44 @@ export function CenterTab({ center }: { center: CheckinCenter }): React.ReactEle
   // 未完成的排前面（缓存变化会触发重渲染，顺序跟着查询进度自己挪）
   const onboardingRows = pendingFirst(extras.onboarding, onboardingRank)
   const growthRows = pendingFirst(extras.growth, growthRank)
+  // 「一键领取 / 一键完成」只碰还有事要做的那些号 —— 判定与排序第一档同源
+  // （`*Rank === 0`），不另写一套「谁可领」的规则，免得两处口径漂移
+  const onboardingTargets = onboardingRows.filter(row => onboardingRank(row) === 0)
+  const growthTargets = growthRows.filter(row => growthRank(row) === 0)
+  const [claimingAll, setClaimingAll] = React.useState(false)
+  const [runningAllGrowth, setRunningAllGrowth] = React.useState(false)
+
+  /**
+   * 一键领取：**串行**逐个账号领。
+   *
+   * 串行而不是 Promise.all：领奖是写上有的动作，并发只会更像风控眼里的异常；
+   * 而且接口内部本来就有节流。目标集合在进入时快照一份 —— 领完的账号会立刻
+   * 沉到列表底部（排序第一档让位），用快照才不会被重排跳过。
+   */
+  const claimAllOnboarding = async (): Promise<void> => {
+    if (claimingAll || onboardingTargets.length === 0) return
+    setClaimingAll(true)
+    try {
+      for (const row of onboardingTargets) {
+        await claimOnboarding(row.id)
+      }
+    } finally {
+      setClaimingAll(false)
+    }
+  }
+
+  /** 一键完成：同样串行（`runGrowth` 内部每条任务之间还有 ≥1s 的写间隔） */
+  const runAllGrowthTasks = async (): Promise<void> => {
+    if (runningAllGrowth || growthTargets.length === 0) return
+    setRunningAllGrowth(true)
+    try {
+      for (const row of growthTargets) {
+        await runGrowth(row.id, 'full')
+      }
+    } finally {
+      setRunningAllGrowth(false)
+    }
+  }
 
   return (
     <div className="ck-main">
@@ -688,6 +726,20 @@ export function CenterTab({ center }: { center: CheckinCenter }): React.ReactEle
               全部查询
             </Button>
           ) : null}
+          {extras.onboarding.length > 0 ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="flex-none"
+              disabled={claimingAll || onboardingTargets.length === 0}
+              title={onboardingTargets.length > 0
+                ? `只对还有待领任务的 ${onboardingTargets.length} 个账号领取（点「全部查询」可刷新可领取状态）`
+                : '当前没有可领取的账号'}
+              onClick={() => void claimAllOnboarding()}
+            >
+              {claimingAll ? '领取中…' : '一键领取'}
+            </Button>
+          ) : null}
         </CardHeader>
         {extras.onboarding.length > 0
           ? <div>{onboardingRows.map(row => <OnboardingRow key={row.id} row={row} />)}</div>
@@ -720,6 +772,20 @@ export function CenterTab({ center }: { center: CheckinCenter }): React.ReactEle
               }}
             >
               全部查询
+            </Button>
+          ) : null}
+          {extras.growth.length > 0 ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="flex-none"
+              disabled={runningAllGrowth || growthTargets.length === 0}
+              title={growthTargets.length > 0
+                ? `只对还有可完成任务的 ${growthTargets.length} 个账号执行（接单 + 点亮 + 领奖；已完成 / 已领取的跳过）`
+                : '当前没有可完成的账号'}
+              onClick={() => void runAllGrowthTasks()}
+            >
+              {runningAllGrowth ? '执行中…' : '一键完成'}
             </Button>
           ) : null}
         </CardHeader>
