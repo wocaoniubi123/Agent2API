@@ -1,6 +1,6 @@
 name: sync-upstream
 
-# 每 10 分钟检查一次上游，有更新就把本仓库 main 同步到上游。
+# 每 30 分钟检查一次上游，有更新就把本仓库 main 同步到上游。
 # 上游地址不写死：从本仓库的 fork 关系（parent）里读，换上游也不用改这个文件。
 #
 # ── 为什么不点网页上的「Sync fork」────────────────────────────
@@ -20,7 +20,9 @@ name: sync-upstream
 # 绝不会覆盖或丢失你 fork 上的提交。
 #
 # ── 平台限制（GitHub 自身行为，不是本工作流的毛病）────────────
-# · cron 最小间隔 5 分钟，10 分钟合规；高峰期实测常延后十几分钟才跑
+# · cron 最小间隔 5 分钟，但 schedule 是「尽力而为」而不是承诺：本仓库实测
+#   `*/10` 从注册起 11 小时只跑了 2 次（间隔 247 分钟）。因此改成 `*/30` ——
+#   不指望它准时，只指望它别彻底不动；真要准点请用本机计划任务
 # · 仓库 60 天无任何活动，GitHub 会自动禁用全部 schedule，需到 Actions 页重开
 # · fork 仓库的 Actions 默认是关闭的，先在 Actions 页点一次
 #   「I understand my workflows, go ahead and enable them」
@@ -28,7 +30,7 @@ name: sync-upstream
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 permissions:
