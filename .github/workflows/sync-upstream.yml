@@ -1,7 +1,11 @@
 name: sync-upstream
 
-# 每 30 分钟检查一次上游，有更新就把本仓库 main 同步到上游。
+# 每 30 分钟检查一次上游，有更新就把本仓库的 main / beta 同步到上游。
 # 上游地址不写死：从本仓库的 fork 关系（parent）里读，换上游也不用改这个文件。
+#
+# ── 跟哪几条分支 ─────────────────────────────────────────────
+# `main` 与 `beta`（见脚本里的 `branches`）。上游新增分支时改那一行即可；
+# fork 里**还没有**的分支会在第一次同步时按上游原样建出来（不并、不挑）。
 #
 # ── 为什么不点网页上的「Sync fork」────────────────────────────
 # 网页 Sync fork / REST 的 merge-upstream 都要人工点或额外配一个带 repo
@@ -51,6 +55,8 @@ jobs:
         run: |
           set -euo pipefail
           repo="${GITHUB_REPOSITORY}"
+          # 跟这几条分支（空格分隔）。加分支就改这一行。
+          branches="main beta"
 
           # 上游 = 本仓库的 parent（本仓库必须是 fork）
           upstream="$(gh api "repos/${repo}" --jq '.parent.full_name // .source.full_name // ""')"
@@ -59,26 +65,67 @@ jobs:
             exit 0
           fi
 
-          # 只读对比两个 main 的 sha，没更新就不克隆，省时间
-          remote_main="$(git ls-remote "https://github.com/${repo}.git" refs/heads/main | cut -f1)"
-          upstream_main="$(git ls-remote "https://github.com/${upstream}.git" refs/heads/main | cut -f1)"
-          echo "本仓库 main : ${remote_main}"
-          echo "上游   main : ${upstream_main}  (${upstream})"
-          if [ "${remote_main}" = "${upstream_main}" ]; then
+          fork_url="https://github.com/${repo}.git"
+          upstream_url="https://github.com/${upstream}.git"
+
+          # 先只读比对（不克隆）：每条分支的上游 sha 与 fork sha 相同就当作齐平。
+          # 注意 fork 上通常有本工作流自己的提交，sha **永远**与上游不同 —— 所以
+          # 「齐平」只在 fork 没本地提交的分支上成立；不成立时会多克隆一次，
+          # 但下面的 merge 是「已是最新」，不会产生多余提交。
+          need=0
+          for branch in ${branches}; do
+            fork_sha="$(git ls-remote "${fork_url}" "refs/heads/${branch}" | cut -f1)"
+            up_sha="$(git ls-remote "${upstream_url}" "refs/heads/${branch}" | cut -f1)"
+            echo "本仓库 ${branch} : ${fork_sha:-（不存在）}"
+            echo "上游   ${branch} : ${up_sha:-（不存在）}  (${upstream})"
+            if [ -n "${up_sha}" ] && [ "${fork_sha}" != "${up_sha}" ]; then
+              need=1
+            fi
+          done
+          if [ "${need}" = "0" ]; then
             echo "已是最新，无需拉取"
             exit 0
           fi
 
           git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${repo}.git" fork
           cd fork
-          git fetch --quiet --no-tags "https://github.com/${upstream}.git" main
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
-          if ! git merge --no-edit FETCH_HEAD; then
-            echo "::error::与上游 ${upstream}（${upstream_main}）合并冲突，本轮已放弃、未推送任何改动，请手动合并"
-            exit 1
-          fi
+          # 逐分支同步；某条失败不拖累另一条，但整轮会以非零退出
+          fail=0
+          for branch in ${branches}; do
+            echo "── ${branch} ──────────────────────────────"
+            fork_sha="$(git ls-remote origin "refs/heads/${branch}" | cut -f1)"
+            up_sha="$(git ls-remote "${upstream_url}" "refs/heads/${branch}" | cut -f1)"
+            if [ -z "${up_sha}" ]; then
+              echo "上游没有 ${branch}，跳过"
+              continue
+            fi
+            if [ "${fork_sha}" = "${up_sha}" ]; then
+              echo "已是最新"
+              continue
+            fi
 
-          git push origin main
-          echo "已同步 ${remote_main} -> $(git rev-parse HEAD)"
+            git fetch --quiet --no-tags "${upstream_url}" "${branch}"
+            fetched="$(git rev-parse FETCH_HEAD)"
+
+            # fork 还没有这条分支：按上游原样建出来（不合并，直接指向上游那次提交）
+            if [ -z "${fork_sha}" ]; then
+              git push origin "FETCH_HEAD:refs/heads/${branch}"
+              echo "已创建 ${branch} -> ${fetched}"
+              continue
+            fi
+
+            git checkout --quiet -B "${branch}" "origin/${branch}"
+            if ! git merge --no-edit FETCH_HEAD; then
+              echo "::error::${branch} 与上游（${fetched}）合并冲突，该分支本轮已放弃、未推送，请手动合并"
+              git merge --abort >/dev/null 2>&1 || true
+              fail=1
+              continue
+            fi
+
+            git push origin "${branch}"
+            echo "已同步 ${branch}：${fork_sha} -> $(git rev-parse HEAD)"
+          done
+          exit "${fail}"
