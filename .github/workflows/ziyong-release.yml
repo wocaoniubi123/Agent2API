@@ -1,0 +1,119 @@
+name: ziyong-release
+
+# 自用发行版：在**本仓库（fork）**里编一条 Windows 安装包，挂成本仓库的 pre-release。
+#
+# ── 为什么不走官方那条链 ────────────────────────────────────
+# 官方发布链（`Agent2Builder/agent2api-releases` 的 `release.yml`）把
+# `SOURCE_REPO` 写死成 `aimod-cc/Agent2API`，永远 checkout **上游仓库**的 tag；
+# 本 fork 的分支进不了那个构建。所以自用发行版只能在自己的 Actions 里编。
+# 与官方链路互不影响：tag 与 Release 都只落在本仓库。
+#
+# ── 为什么产物未签名 ────────────────────────────────────────
+# 仓库里没有任何 Windows 代码签名材料（Apple / Android / iOS 的都在构建仓库，
+# 且 Windows 本来就只出未签名包）。首次运行会有 SmartScreen 提示，
+# 选「更多信息 → 仍要运行」即可。
+#
+# ── 为什么 tag 要显式 --target ──────────────────────────────
+# `gh release create <tag>` 不给 `--target` 时，tag 会打在**默认分支 HEAD** 上，
+# 而这里要的是「这次 workflow_dispatch 选的那次提交」（通常是 ziyong）。
+#
+# ── 触发 ────────────────────────────────────────────────────
+# 只有 workflow_dispatch（手动）：这是自用包，不做定时、不跟 push，
+# 免得每推一次分支就白烧十几分钟 Windows 机器。
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（已存在则只覆盖上传安装包）'
+        required: false
+        default: 'ziyong-20261105.1'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ziyong-release
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      # 版本、任务名与官方 build.yml 保持一致，缓存 key 才对得上
+      - name: 安装 Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop-tauri/package-lock.json
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 依赖
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop-tauri/src-tauri -> ../../target
+
+      - name: 安装桌面端依赖
+        run: npm --prefix desktop-tauri ci
+
+      - name: 构建 Windows 安装包（NSIS）
+        run: npm --prefix desktop-tauri run build
+
+      # 先留一份 artifact：即使后面的 Release 步骤因为权限/重名失败，
+      # 产物也不会白编一趟
+      - name: 上传产物（artifact 兜底）
+        uses: actions/upload-artifact@v7
+        with:
+          name: ziyong-nsis
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+      - name: 发布到本仓库 Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          # 正文放在 env 里而不是 heredoc：YAML 块标量会给每行加缩进，
+          # heredoc 的结束符必须顶格，缩进后会一直读到文件尾（仓库里踩过）
+          NOTES: |
+            自用构建，基于 `ziyong` 分支：上游 3.4.1 + 上游 beta `34582c7` 待发布内容 + 本分支改动。
+            Windows x64 安装包（NSIS），**未签名**，首次运行需在 SmartScreen 里选「仍要运行」。
+
+            ### 本分支改动
+
+            - 签到中心 · 成长任务：新增「全部查询」（原先只有新手福利有）
+            - 签到中心 · 新手福利 / 成长任务：列表按「未完成 → 状态未知 → 已完成」排序
+            - 签到中心 · 新手福利：「一键领取」；成长任务：「一键完成」—— 只对还有待办的账号执行，没有可做的就置灰
+            - 手机端产物重建：内嵌版本 3.4.0 → 3.4.1（上游漏重建）
+
+            ### 合入的上游 beta 内容（34582c7）
+
+            路由组（跨提供商组合模型 ID）、路由草稿预演、压缩路由、客户端识别、服务端一键更新、
+            MonkeyCode 提供商、签到领取验证（ZCode / 豆包人工验证提示）、余额即将到期份额与倒计时、
+            网页搜索聚合等。
+
+            ### 兼容性
+
+            - 插件协议 tag：`v3.4.0`（与上游一致，现有插件包无需升级）
+            - 版本号：3.4.1（未改动）
+        run: |
+          set -euo pipefail
+          printf '%s' "$NOTES" > notes.md
+          ls -l target/release/bundle/nsis/
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在 → 只覆盖上传安装包"
+            gh release upload "$TAG" target/release/bundle/nsis/*.exe --clobber
+          else
+            gh release create "$TAG" target/release/bundle/nsis/*.exe \
+              --target "$GITHUB_SHA" \
+              --title 'ziyong 自用构建 · 2026-11-05' \
+              --notes-file notes.md \
+              --prerelease
+          fi
+          gh release view "$TAG" --json url,assets --jq '"Release: " + .url + "  资产: " + ([.assets[].name] | join(", "))'
