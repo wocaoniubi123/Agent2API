@@ -585,6 +585,41 @@ function GrowthRow({ row }: { row: GrowthEntry }): React.ReactElement {
   )
 }
 
+/* ─── 排序：未完成优先 ─────────────────────── */
+
+/**
+ * 三档排序：还有事要做的排最前，**状态未知的居中**，做完的沉底。
+ *
+ * 为什么「未知」要单独一档：没点过「全部查询」时整张表都还没查，把未知混进
+ * 第一档会让每行都像待处理，混进最后一档又会把真正待办的账号挤下去。分三档
+ * 之后，点完「全部查询」那一档自然让位，顺序就是「谁还需要动手」的顺序。
+ *
+ * 同档内保持快照给的原始顺序：显式用下标兜底，不吃 `sort` 稳定性的默认值。
+ */
+function pendingFirst<T>(rows: T[], rankOf: (row: T) => 0 | 1 | 2): T[] {
+  return rows
+    .map((row, index) => ({ row, index, rank: rankOf(row) }))
+    .sort((a, b) => (a.rank - b.rank) || (a.index - b.index))
+    .map(item => item.row)
+}
+
+/** 新手福利：0 = 还有待领任务，1 = 还没查过 / 查询失败，2 = 已结清或无可领 */
+function onboardingRank(row: OnboardingEntry): 0 | 1 | 2 {
+  const cache = onboardingOf(row.id)
+  if (cache.settled) return 2
+  if (cache.status !== 'loaded') return 1
+  return cache.tasks.some(task => !task.done && !task.blocked) ? 0 : 2
+}
+
+/** 成长任务：0 = 还有可完成任务，1 = 还没查过 / 查询失败，2 = 全部完成 */
+function growthRank(row: GrowthEntry): 0 | 1 | 2 {
+  const cache = growthOf(row.id)
+  if (cache.status !== 'loaded') return 1
+  const pending = (cache.tasks ?? [])
+    .filter(task => growthTaskRunnable(task, 'full') && !growthTaskCompleted(task))
+  return pending.length > 0 ? 0 : 2
+}
+
 /* ─── 主体 ─────────────────────────────────── */
 
 export function CenterTab({ center }: { center: CheckinCenter }): React.ReactElement {
@@ -593,6 +628,10 @@ export function CenterTab({ center }: { center: CheckinCenter }): React.ReactEle
     || extras.onboarding.length > 0 || extras.plans.length > 0 || extras.growth.length > 0
   const section = store.centerSection
   const runningAll = store.runningAll || center.auto?.running === true
+  // 两个「全部查询」都查完之后，用户要看的是「还有哪些账号需要动手」——
+  // 未完成的排前面（缓存变化会触发重渲染，顺序跟着查询进度自己挪）
+  const onboardingRows = pendingFirst(extras.onboarding, onboardingRank)
+  const growthRows = pendingFirst(extras.growth, growthRank)
 
   return (
     <div className="ck-main">
@@ -651,7 +690,7 @@ export function CenterTab({ center }: { center: CheckinCenter }): React.ReactEle
           ) : null}
         </CardHeader>
         {extras.onboarding.length > 0
-          ? <div>{extras.onboarding.map(row => <OnboardingRow key={row.id} row={row} />)}</div>
+          ? <div>{onboardingRows.map(row => <OnboardingRow key={row.id} row={row} />)}</div>
           : <Empty className="ck-empty">没有支持新手福利的账号。</Empty>}
       </Card> : null}
 
@@ -669,9 +708,23 @@ export function CenterTab({ center }: { center: CheckinCenter }): React.ReactEle
         <CardHeader className="panel-head">
           <h2>成长任务</h2>
           <span className="panel-sub">WorkBuddy 国内版 · 查询任务树后一键点亮 / 领奖 · 含开学季与猫猫旅行 · 点击行展开明细</span>
+          {extras.growth.length > 0 ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="ml-auto flex-none"
+              onClick={() => {
+                for (const row of extras.growth) {
+                  void queryGrowth(row.id)
+                }
+              }}
+            >
+              全部查询
+            </Button>
+          ) : null}
         </CardHeader>
         {extras.growth.length > 0
-          ? <div>{extras.growth.map(row => <GrowthRow key={row.id} row={row} />)}</div>
+          ? <div>{growthRows.map(row => <GrowthRow key={row.id} row={row} />)}</div>
           : <Empty className="ck-empty">没有支持成长任务的账号（需要 WorkBuddy 国内版）。</Empty>}
       </Card> : null}
     </div>
