@@ -165,6 +165,20 @@ pub const DEFAULT_USAGE_QUERY_CONCURRENCY: u32 = 5;
 /// 并发数上限。再高等于「不限制」，没有实际意义，纯粹防手滑。
 pub const USAGE_QUERY_CONCURRENCY_MAX: u32 = 32;
 
+/// 每日全量强刷凭证的开关键（维护设置 → 凭证维护）。
+///
+/// 与 `KEY_USAGE_QUERY_CONCURRENCY` 同一处配置面：默认**开**，到点后的第一趟把
+/// 全部账号都当成「该刷」，其余趟仍只刷临期（见 `core::credential_maintenance`
+/// 的 `claim_daily_sweep`）。
+pub const KEY_CREDENTIAL_DAILY_SWEEP: &str = "credentialDailySweep";
+
+/// 每日全量强刷的时刻键（`HH:MM`，默认 `22:00`）。非法值回落默认。
+pub const KEY_CREDENTIAL_DAILY_SWEEP_AT: &str = "credentialDailySweepAt";
+
+/// 每日全量强刷的默认开关与时刻。
+pub const DEFAULT_CREDENTIAL_DAILY_SWEEP: bool = true;
+pub const DEFAULT_CREDENTIAL_DAILY_SWEEP_AT: &str = "22:00";
+
 /// 「丢弃保活换行分片」开关的键（详见 `core::upstream::sse::is_newline_keepalive`）。
 ///
 /// 打开后，**声明了该能力位的**提供商（目前只有 WorkBuddy 与 AutoClaw）在下发

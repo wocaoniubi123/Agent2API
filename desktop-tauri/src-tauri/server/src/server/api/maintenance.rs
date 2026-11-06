@@ -16,12 +16,15 @@ pub async fn overview(
     let result = (|| -> Result<Value, String> {
         let records = maintenance::storage::list(&query)?;
         let latest = maintenance::storage::latest()?;
+        // 每日全量强刷的开关与时刻（维护设置弹窗「凭证维护」下面那一行读它）
+        let (daily_sweep, daily_sweep_at) = crate::server::config::credential_daily_sweep();
         Ok(json!({
             "tasks": [scheduled_tasks::task_by_id(maintenance::CREDENTIAL), scheduled_tasks::task_by_id(maintenance::MODEL)],
             "latest": latest,
             "records": records,
             "retentionDays": maintenance::storage::RETENTION_DAYS,
             "maxRecords": maintenance::storage::MAX_RECORDS,
+            "dailySweep": { "enabled": daily_sweep, "at": daily_sweep_at },
         }))
     })();
     match result {
@@ -36,6 +39,29 @@ pub async fn entry(State(state): State<ServerState>, request: axum::extract::Req
     let rest = path.strip_prefix("/api/maintenance/").unwrap_or_default();
     let segments = rest.split('/').collect::<Vec<_>>();
     match (method.clone(), segments.as_slice()) {
+        // 每日全量强刷的开关与时刻（维护设置弹窗「凭证维护」下面那一行）
+        (Method::POST, ["daily-sweep"]) => {
+            let body = match axum::body::to_bytes(request.into_body(), MAX_BODY_SIZE).await {
+                Ok(body) => body,
+                Err(error) => return error_response(400, format!("请求体读取失败：{error}")),
+            };
+            let payload = match parse_body(&body) {
+                Ok(payload) => payload,
+                Err(error) => return error_response(400, error.message),
+            };
+            let Some(enabled) = payload.get("enabled").and_then(Value::as_bool) else {
+                return error_response(400, "缺少 enabled（true / false）");
+            };
+            let at = payload
+                .get("at")
+                .and_then(Value::as_str)
+                .unwrap_or(crate::server::config::DEFAULT_CREDENTIAL_DAILY_SWEEP_AT);
+            if !crate::server::config::set_credential_daily_sweep(enabled, at) {
+                return error_response(400, "时刻格式必须是 HH:MM（00:00–23:59）");
+            }
+            let (next_enabled, next_at) = crate::server::config::credential_daily_sweep();
+            return ok_json(json!({ "enabled": next_enabled, "at": next_at }));
+        }
         (Method::GET, ["records", id]) => match maintenance::storage::detail(id) {
             Ok(detail) => ok_json(json!(detail)),
             Err(error) => error_response(

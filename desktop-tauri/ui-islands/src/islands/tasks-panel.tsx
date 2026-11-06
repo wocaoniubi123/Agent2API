@@ -2,6 +2,7 @@ import * as React from 'react'
 import { createRoot } from 'react-dom/client'
 import { mountOnPage } from '../island-lazy'
 import { t } from '../i18n'
+import { panelRequest } from './panel-request'
 import { MaintenancePanel } from '../../../ui-shared/maintenance-panel'
 import type { MaintenanceApi, MaintenanceDetail, MaintenanceOverview, MaintenanceQuery, MaintenanceTask, MaintenanceTaskId } from '../../../ui-shared/maintenance-types'
 
@@ -33,6 +34,12 @@ const api: MaintenanceApi = {
   run: id => bridge().runMaintenance(id),
   retry: (id, itemId) => bridge().retryMaintenance(id, itemId),
   save: (id, patch) => bridge().saveScheduledTask(id, patch),
+  // 每日全量强刷走双路请求：桌面壳 api_request 桥 / 网页面板同源 fetch
+  saveDailySweep: async patch => {
+    const data = await panelRequest('POST', '/api/maintenance/daily-sweep', patch) as
+      { enabled?: unknown; at?: unknown } | undefined
+    return { enabled: data?.enabled === true, at: String(data?.at ?? patch.at) }
+  },
 }
 
 function AutoMaintenancePage() {

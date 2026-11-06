@@ -69,6 +69,8 @@ export type MaintenanceOverview = {
   records: { items: MaintenanceRun[]; total: number; offset: number; limit: number }
   retentionDays: number
   maxRecords: number
+  /** 每日全量强刷（凭证维护那一组下面的开关与时刻）；旧网关没有这个字段。 */
+  dailySweep?: { enabled: boolean; at: string }
 }
 export type MaintenanceApi = {
   overview(query: MaintenanceQuery): Promise<MaintenanceOverview>
@@ -76,6 +78,8 @@ export type MaintenanceApi = {
   run(taskId: MaintenanceTaskId): Promise<MaintenanceDetail>
   retry(id: string, itemId?: string): Promise<MaintenanceDetail>
   save(taskId: MaintenanceTaskId, patch: { enabled: boolean; interval: number }): Promise<MaintenanceTask>
+  /** 保存每日全量强刷（可选：没有这个能力的调用方不传）。 */
+  saveDailySweep?(patch: { enabled: boolean; at: string }): Promise<{ enabled: boolean; at: string } | undefined>
 }
 
 export const MAINTENANCE_TASKS: readonly MaintenanceTaskId[] = ['credentialMaintenance', 'modelRefresh']

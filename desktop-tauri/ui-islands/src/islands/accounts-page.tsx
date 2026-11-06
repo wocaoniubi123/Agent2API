@@ -8,6 +8,7 @@ import { t } from '../i18n'
 import { Button, Checkbox, Input, ResponsiveSheet, SegmentedControl, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, cn, Card, Label, Empty, Table, TableBody, TableRow, TableCell } from '@ui'
 import { TableFooter, useClientPaging } from './table-shell'
 import { shared, toast, type AccountRecord, type ColSettingsHandle } from './accounts-shared'
+import { panelRequest, readNumberSetting } from './panel-request'
 import { isDesktopAccount, isEnabled, providerOf, supportsUsage } from './accounts-domain'
 import { ACCOUNT_COLUMNS, bindColumnGrips, columnWidths, tableMinWidth } from './accounts-columns'
 import {
@@ -63,10 +64,9 @@ function UsageConcurrencyField() {
     let alive = true
     void (async () => {
       try {
-        const response = await fetch('/api/accounts/usage/concurrency', { credentials: 'include' })
-        const payload = await response.json()
-        const value = payload?.data?.value
-        if (alive && typeof value === 'number') setDraft(String(value))
+        // 双路请求：桌面壳走 api_request 桥、网页面板走同源 fetch（见 panel-request.ts）
+        const value = await readNumberSetting('/api/accounts/usage/concurrency')
+        if (alive && value !== undefined) setDraft(String(value))
       } catch {
         // 读不到就保持默认 5：这是显示值，改动本身由失焦时的 POST 兜底
       }
@@ -80,15 +80,9 @@ function UsageConcurrencyField() {
       return
     }
     try {
-      const response = await fetch('/api/accounts/usage/concurrency', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value }),
-      })
-      const payload = await response.json()
-      if (!response.ok || payload?.success === false) throw new Error(payload?.error || '保存失败')
-      setDraft(String(payload?.data?.value ?? value))
+      const data = await panelRequest('POST', '/api/accounts/usage/concurrency', { value }) as
+        { value?: unknown } | undefined
+      setDraft(String(typeof data?.value === 'number' ? data.value : value))
       setSaved(true)
       window.setTimeout(() => setSaved(false), 1200)
     } catch (error) {

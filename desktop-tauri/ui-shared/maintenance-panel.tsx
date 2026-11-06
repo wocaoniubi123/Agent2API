@@ -198,6 +198,6 @@ export function MaintenancePanel({ api, active = true, revision = 0, onAccount, 
       />
     </> : null}
 
-    {settingsOpen && overview ? <MaintenanceSettings tasks={overview.tasks} api={api} onClose={() => setSettingsOpen(false)} onSaved={() => void load(true)} /> : null}
+    {settingsOpen && overview ? <MaintenanceSettings tasks={overview.tasks} api={api} dailySweep={overview.dailySweep} onClose={() => setSettingsOpen(false)} onSaved={() => void load(true)} /> : null}
   </div>
 }

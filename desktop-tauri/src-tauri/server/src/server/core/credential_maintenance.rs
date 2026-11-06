@@ -89,35 +89,25 @@ pub fn begin_refresh(id: &str) -> Option<RefreshingGuard> {
     Some(RefreshingGuard { id: id.to_string() })
 }
 
-/// 每日全量强刷开关（`AGENT2API_DAILY_SWEEP`，默认开；`off`/`0`/`false`/`no` 关）。
-fn daily_sweep_enabled() -> bool {
-    match std::env::var("AGENT2API_DAILY_SWEEP") {
-        Ok(value) => !matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "off" | "0" | "false" | "no"
-        ),
-        Err(_) => true,
-    }
-}
-
-/// 每日全量强刷的时刻（`AGENT2API_DAILY_SWEEP_AT`，`HH:MM`，默认 `22:00`）。
+/// 每日全量强刷的开关与时刻（配置项 `credentialDailySweep` / `credentialDailySweepAt`）。
 ///
-/// 非法值一律回落默认：一个手滑写错的 env 不该让全量强刷彻底不跑。
-fn daily_sweep_at() -> (u32, u32) {
-    let raw = std::env::var("AGENT2API_DAILY_SWEEP_AT").unwrap_or_default();
-    let mut parts = raw.trim().split(':');
+/// 一次取两个值：开关与时刻必须来自同一份配置快照，否则「刚打开开关、时刻还是旧的」
+/// 这种中间态会让判定错一拍。时刻的合法性由 `config::set_credential_daily_sweep`
+/// 在写入时把住，这里只做兜底（写坏的文件也不至于让强刷彻底不跑）。
+fn daily_sweep_settings() -> (bool, (u32, u32)) {
+    let (enabled, at) = crate::server::config::credential_daily_sweep();
+    let mut parts = at.split(':');
     let hour = parts
         .next()
         .and_then(|value| value.trim().parse::<u32>().ok())
-        .filter(|value| *value < 24);
+        .filter(|value| *value < 24)
+        .unwrap_or(22);
     let minute = parts
         .next()
         .and_then(|value| value.trim().parse::<u32>().ok())
-        .filter(|value| *value < 60);
-    match (hour, minute) {
-        (Some(hour), Some(minute)) => (hour, minute),
-        _ => (22, 0),
-    }
+        .filter(|value| *value < 60)
+        .unwrap_or(0);
+    (enabled, (hour, minute))
 }
 
 /// 今天这一趟要不要全量强刷。
@@ -125,10 +115,10 @@ fn daily_sweep_at() -> (u32, u32) {
 /// 返回 `true` 时**今天的标记已经写下去了**（先落再执行）。判据是「过了没」而不是
 /// 「等于」：22:00 后的第一次 tick 就会命中，不需要卡点。
 fn claim_daily_sweep() -> bool {
-    if !daily_sweep_enabled() {
+    let (enabled, (hour, minute)) = daily_sweep_settings();
+    if !enabled {
         return false;
     }
-    let (hour, minute) = daily_sweep_at();
     let now = crate::server::core::beijing::now();
     use chrono::Timelike;
     if (now.hour(), now.minute()) < (hour, minute) {
@@ -277,7 +267,7 @@ async fn refresh_all_forced(store: &AccountStore) -> Vec<Value> {
                 .collect()
         })
         .unwrap_or_default();
-    let (hour, minute) = daily_sweep_at();
+    let (_, (hour, minute)) = daily_sweep_settings();
     logging::log(
         "[Accounts]",
         &format!(

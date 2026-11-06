@@ -192,6 +192,12 @@ pub struct RuntimeConfig {
     /// 「查询余额」立刻按新值跑），从 `Value` 里翻一次要处理类型判定，解析一次
     /// 存下来最省事。语义见 `KEY_USAGE_QUERY_CONCURRENCY`（0 = 不限制）。
     usage_query_concurrency: u32,
+    /// 每日全量强刷凭证（维护设置 → 凭证维护里的「每日全量强刷」开关与时刻）。
+    ///
+    /// 存成两个字段而不是一个结构：取用处（`credential_maintenance`）只用这两项，
+    /// 拆开省掉一次解构。时刻是 `HH:MM` 字符串，解析在取用处做（非法值回落默认）。
+    credential_daily_sweep: bool,
+    credential_daily_sweep_at: String,
     /// 规则在配置读取 / 保存时编译，请求间共享，同一次转发使用完整快照。
     sanitize: SanitizeSettings,
     /// 开发者角色兼容开关（设置页「网关 → 开发者角色兼容」）。
@@ -615,6 +621,19 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
             .and_then(Value::as_u64)
             .map(|value| value.min(USAGE_QUERY_CONCURRENCY_MAX as u64) as u32)
             .unwrap_or(DEFAULT_USAGE_QUERY_CONCURRENCY),
+        // 每日全量强刷：开关只有字面 `false` 算关（缺失 → 开）；时刻原样存字符串，
+        // 合法性留给取用处（与 `usage_query_concurrency` 同一取向：读入口不做校验）。
+        credential_daily_sweep: raw
+            .get(KEY_CREDENTIAL_DAILY_SWEEP)
+            .and_then(Value::as_bool)
+            .unwrap_or(DEFAULT_CREDENTIAL_DAILY_SWEEP),
+        credential_daily_sweep_at: raw
+            .get(KEY_CREDENTIAL_DAILY_SWEEP_AT)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DEFAULT_CREDENTIAL_DAILY_SWEEP_AT)
+            .to_string(),
         sanitize: sanitize_config::from_raw(&raw),
         // 只有字面 `false` 算关闭：**默认开**（缺失 → true）。改写语义无损
         // （developer 与 system 在 OpenAI 语义上等价），而默认关会让发 developer
@@ -1917,6 +1936,65 @@ pub fn set_usage_query_concurrency(value: u32) -> bool {
             Value::from(clamped as i64),
         );
         config.usage_query_concurrency = clamped;
+    })
+}
+
+/// 每日全量强刷的开关与时刻（时刻原样返回 `HH:MM`，解析在取用处）。
+pub fn credential_daily_sweep() -> (bool, String) {
+    if let Ok(guard) = CONFIG.read() {
+        if let Some(config) = guard.as_ref() {
+            return (
+                config.credential_daily_sweep,
+                config.credential_daily_sweep_at.clone(),
+            );
+        }
+    }
+    (
+        DEFAULT_CREDENTIAL_DAILY_SWEEP,
+        DEFAULT_CREDENTIAL_DAILY_SWEEP_AT.to_string(),
+    )
+}
+
+/// 把 `H:M` / `HH:MM` 归一成 `HH:MM`；形态不合法给 None。
+fn normalize_hhmm(raw: &str) -> Option<String> {
+    let mut parts = raw.trim().split(':');
+    let hour = parts
+        .next()?
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value < 24)?;
+    let minute = parts
+        .next()?
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value < 60)?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(format!("{hour:02}:{minute:02}"))
+}
+
+/// 写入每日全量强刷的开关与时刻。
+///
+/// 时刻非法直接**拒绝写入并返回 false**（与并发数那一处同口径：写坏的值该被看见，
+/// 而不是被静默夹到默认值）。
+pub fn set_credential_daily_sweep(enabled: bool, at: &str) -> bool {
+    let Some(normalized) = normalize_hhmm(at) else {
+        return false;
+    };
+    update(|config| {
+        config.raw.insert(
+            KEY_CREDENTIAL_DAILY_SWEEP.to_string(),
+            Value::Bool(enabled),
+        );
+        config.raw.insert(
+            KEY_CREDENTIAL_DAILY_SWEEP_AT.to_string(),
+            Value::String(normalized.clone()),
+        );
+        config.credential_daily_sweep = enabled;
+        config.credential_daily_sweep_at = normalized.clone();
     })
 }
 
