@@ -45,6 +45,139 @@ use crate::server::core::providers::adapter::ProviderAdapter;
 use crate::server::errors::GatewayError;
 use crate::server::logging;
 
+/// 每日全量强刷的去重标记（存在任务状态表里，重启后仍然有效）。
+///
+/// 存的是**北京日期键**（`YYYY-MM-DD`）。判定顺序是「先落标记、再执行」：
+/// 中途崩溃/断电时当天不再补扫 —— 补扫会把已经刷过的号再轮换一遍
+/// refreshToken（旧值立刻失效），风险比重扫大得多。
+const DAILY_SWEEP_KEY: &str = "credentialMaintenance.dailySweep";
+
+/// 「这个账号正在被某个入口刷新」的进程内标记。
+///
+/// ── 为什么需要它 ────────────────────────────────────────────
+/// 后台轮次（本模块）与手动「刷新」按钮（`maintenance::refresh_single`）是两个
+/// 入口，都会调 `refresh_access_token`；撞同一个账号时两边各拿一份**刷新前**的
+/// refreshToken 去换，先成功的那次让旧值立刻失效 → 后一次必然失败，账号可能就
+/// 此需要重新登录。任务级互斥（`task_state::claim`）只挡「同一任务不并发」，
+/// 挡不住手动入口，所以这里再补一把账号级的。
+///
+/// ── 锁的边界 ────────────────────────────────────────────────
+/// 互斥体只在插入/删除的微秒里持有；网络请求期间持有的是 HashSet 里的一个
+/// 字符串，不持锁（与模块头「不持锁跨 await」同一条约束）。
+static REFRESHING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+/// 「正在刷新」标记的 RAII 守卫：离开作用域即释放该账号。
+pub struct RefreshingGuard {
+    id: String,
+}
+
+impl Drop for RefreshingGuard {
+    fn drop(&mut self) {
+        if let Ok(mut set) = REFRESHING.lock() {
+            set.remove(&self.id);
+        }
+    }
+}
+
+/// 抢「正在刷新」标记；已被别的入口占用时返回 `None`（调用方据此跳过或报 409）。
+pub fn begin_refresh(id: &str) -> Option<RefreshingGuard> {
+    let mut set = REFRESHING.lock().ok()?;
+    if !set.insert(id.to_string()) {
+        return None;
+    }
+    Some(RefreshingGuard { id: id.to_string() })
+}
+
+/// 每日全量强刷开关（`AGENT2API_DAILY_SWEEP`，默认开；`off`/`0`/`false`/`no` 关）。
+fn daily_sweep_enabled() -> bool {
+    match std::env::var("AGENT2API_DAILY_SWEEP") {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "off" | "0" | "false" | "no"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// 每日全量强刷的时刻（`AGENT2API_DAILY_SWEEP_AT`，`HH:MM`，默认 `22:00`）。
+///
+/// 非法值一律回落默认：一个手滑写错的 env 不该让全量强刷彻底不跑。
+fn daily_sweep_at() -> (u32, u32) {
+    let raw = std::env::var("AGENT2API_DAILY_SWEEP_AT").unwrap_or_default();
+    let mut parts = raw.trim().split(':');
+    let hour = parts
+        .next()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value < 24);
+    let minute = parts
+        .next()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value < 60);
+    match (hour, minute) {
+        (Some(hour), Some(minute)) => (hour, minute),
+        _ => (22, 0),
+    }
+}
+
+/// 今天这一趟要不要全量强刷。
+///
+/// 返回 `true` 时**今天的标记已经写下去了**（先落再执行）。判据是「过了没」而不是
+/// 「等于」：22:00 后的第一次 tick 就会命中，不需要卡点。
+fn claim_daily_sweep() -> bool {
+    if !daily_sweep_enabled() {
+        return false;
+    }
+    let (hour, minute) = daily_sweep_at();
+    let now = crate::server::core::beijing::now();
+    use chrono::Timelike;
+    if (now.hour(), now.minute()) < (hour, minute) {
+        return false;
+    }
+    let today = crate::server::core::beijing::date_key(now);
+    let marker = crate::server::core::task_state::read(DAILY_SWEEP_KEY)
+        .ok()
+        .and_then(|state| state.value);
+    if marker
+        .as_ref()
+        .and_then(|value| value.get("date"))
+        .and_then(Value::as_str)
+        == Some(today.as_str())
+    {
+        return false;
+    }
+    let payload = json!({ "date": today, "startedAt": crate::server::logging::now_ms() });
+    if crate::server::core::task_state::store_value(DAILY_SWEEP_KEY, payload).is_err() {
+        // 标记落不下去就不跑：宁可今天少扫一次，也不要冒重复轮换的风险
+        logging::log("[Accounts]", "⚠️ 全量强刷标记未能落盘，本次放弃（下一轮重试）");
+        return false;
+    }
+    true
+}
+
+/// 记下本次全量强刷的结果（只用于界面/日志，不参与去重判断）。
+fn finish_daily_sweep(refreshed: usize, skipped_count: usize, failed: usize, seconds: u64) {
+    let today = crate::server::core::beijing::today_key();
+    let payload = json!({
+        "date": today,
+        "refreshed": refreshed,
+        "skipped": skipped_count,
+        "failed": failed,
+        "seconds": seconds,
+        "finishedAt": crate::server::logging::now_ms(),
+    });
+    if crate::server::core::task_state::store_value(DAILY_SWEEP_KEY, payload).is_err() {
+        logging::log("[Accounts]", "⚠️ 全量强刷结果未能落盘（只影响界面显示）");
+    }
+    logging::log_with_level(
+        "[Accounts]",
+        &format!(
+            "每日全量强刷完成：成功 {refreshed}，跳过 {skipped_count}，失败 {failed}（耗时 {seconds} 秒）"
+        ),
+        if failed > 0 { "error" } else { "info" },
+    );
+}
+
 /// 逐条结果的状态取值（**字符串本身就是给前端与日志看的契约**）
 pub const STATUS_REFRESHED: &str = "refreshed";
 /// 不需要刷新，或该家不支持主动刷新
@@ -120,7 +253,43 @@ pub async fn refresh_checked(
 }
 
 pub async fn refresh_expiring_accounts(store: &AccountStore) -> Vec<Value> {
+    // 每日全量强刷：到了设定时刻后的**第一趟**改成「每个账号都刷」，其余趟照旧只刷
+    // 临期。这条路与 10 分钟轮次共用同一个 task id 的 claim，两者不可能同时跑。
+    if claim_daily_sweep() {
+        return refresh_all_forced(store).await;
+    }
     refresh_selected_accounts(store, None).await
+}
+
+/// 全量强刷：把每个账号都当成「该刷」，复用 `refresh_accounts` 的 forced 通道。
+///
+/// 串行（`refresh_accounts` 本身就是逐个 await）：一两百个号一轮要几分钟；
+/// 并发只会同时打上游、把风控引过来，所以这里刻意不并发。
+async fn refresh_all_forced(store: &AccountStore) -> Vec<Value> {
+    let ids: Vec<String> = store
+        .list_accounts()
+        .get("accounts")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("id").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let (hour, minute) = daily_sweep_at();
+    logging::log(
+        "[Accounts]",
+        &format!(
+            "每日全量强刷开始：{} 个账号（每日 {hour:02}:{minute:02} 后第一趟）",
+            ids.len()
+        ),
+    );
+    let started = std::time::Instant::now();
+    let results = refresh_accounts(store, None, &ids).await;
+    let (refreshed, skipped_count, failed) = summarize(&results);
+    finish_daily_sweep(refreshed, skipped_count, failed, started.elapsed().as_secs());
+    results
 }
 
 pub async fn refresh_selected_accounts(store: &AccountStore, selected: Option<&[String]>) -> Vec<Value> {
@@ -222,6 +391,12 @@ pub async fn refresh_accounts(store: &AccountStore, selected: Option<&[String]>,
         // 逐个 await（不并发）：刷新是低频维护动作、单个账号要打一次上游，
         // 串行既避开风控也保证日志顺序稳定；失败被 match 收敛成一条结果，
         // 不会中断循环（见模块头的失败隔离）。
+        // 账号级互斥：手动「刷新」按钮（`maintenance::refresh_single`）可能正在刷
+        // 这个号，两边同时跑会让先成功的那次把 refreshToken 作废（见 `begin_refresh`）。
+        let Some(_refreshing) = begin_refresh(&id) else {
+            slots[index] = Some(skipped(&id, &provider, "该账号正在被另一个入口刷新，本轮跳过"));
+            continue;
+        };
         let started = std::time::Instant::now();
         slots[index] = Some(match refresh_checked(store, adapter.as_ref(), &id).await {
             Ok(_) => {

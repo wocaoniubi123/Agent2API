@@ -304,6 +304,14 @@ pub async fn refresh_single(
     id: &str,
 ) -> Result<String, crate::server::errors::GatewayError> {
     use crate::server::errors::GatewayError;
+    // 与后台轮次共用同一把账号级锁：撞车时直接拒绝，绝不让两个刷新同时打这个号
+    // （先成功的那次会让 refreshToken 立刻作废，后一次必然失败）。
+    let Some(_refreshing) = credential_maintenance::begin_refresh(id) else {
+        return Err(GatewayError::with_status(
+            409,
+            format!("账号 {id} 正在刷新，请稍候再试"),
+        ));
+    };
     let recorder = storage::Recorder::start(CREDENTIAL, "manual", None)
         .map_err(|error| GatewayError::with_status(503, error))?;
     let before = types::accounts(store);
