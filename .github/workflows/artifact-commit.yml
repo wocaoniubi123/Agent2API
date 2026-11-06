@@ -1,0 +1,69 @@
+name: artifact-commit
+
+# 按源码重建前端产物并**提交回当前分支**。
+#
+# 为什么需要它：`desktop-tauri/ui/**`（ui.js / ui.css / mobile.js / sw.js / login.js）
+# 是提交进仓库的生成物，`frontend-artifacts` 闸要求「用源码重建后字节一致」。合并上游后
+# 源码变了（例如 ui-islands 的改动），产物必须重生一次。
+#
+# 只在 `merge/**` 分支的 push 上跑：这是给合并流程用的临时工具，不影响日常分支。
+# 机器人用 GITHUB_TOKEN 提交，GitHub 不会因此再触发工作流，不存在自激循环。
+
+on:
+  push:
+    branches:
+      - 'merge/**'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: artifact-commit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            desktop-tauri/ui-kit/package-lock.json
+            desktop-tauri/ui-islands/package-lock.json
+            desktop-tauri/mobile/package-lock.json
+            desktop-tauri/i18n/package-lock.json
+
+      - name: 安装依赖（与 frontend-artifacts 闸同一口径）
+        run: |
+          npm --prefix desktop-tauri/ui-kit ci
+          npm --prefix desktop-tauri/ui-islands ci
+          npm --prefix desktop-tauri/mobile ci
+          npm --prefix desktop-tauri/i18n ci
+
+      - name: 重建产物
+        run: |
+          npm --prefix desktop-tauri/ui-islands run build
+          npm --prefix desktop-tauri/mobile run build
+          npm --prefix desktop-tauri/i18n run build
+
+      - name: 差异预览
+        run: git status --porcelain desktop-tauri/ui | head -40
+
+      - name: 提交并推送
+        run: |
+          git config user.name 'artifact-bot'
+          git config user.email 'artifact-bot@users.noreply.github.com'
+          git add -A desktop-tauri/ui
+          if git diff --cached --quiet; then
+            echo "产物与源码已一致，无需提交"
+            exit 0
+          fi
+          git commit -m 'CI：按源码重建前端产物'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
