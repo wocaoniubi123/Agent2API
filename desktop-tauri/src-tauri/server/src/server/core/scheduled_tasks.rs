@@ -305,10 +305,23 @@ async fn run_backend(
         } else { "已完成版本检查".to_string() });
     }
     if matches!(task.id, TASK_CREDENTIAL_MAINTENANCE | TASK_MODEL_REFRESH) {
-        let detail = crate::server::core::maintenance::execute(
-            store,
-            crate::server::core::maintenance::Request::full(task.id, manual),
-        ).await?;
+        let mut request = crate::server::core::maintenance::Request::full(task.id, manual);
+        // 每日全量强刷：只在**自动**那一轮生效（`manual == false`）。
+        //
+        // 挂在这里而不是 `credential_maintenance::refresh_selected_accounts()`：
+        // 那个函数被 `/api/accounts/refresh-expiring`（手点「检查全部」）共用，挂在那
+        // 边会让「只刷临期」的手动动作变成一轮几分钟的全量。全量是**排期**行为，
+        // 归调度层；`forced` 里人人都有就是全量，其余闸（不支持刷新 / 需重登 / 正在
+        // 被别的入口刷）照旧生效。
+        if task.id == TASK_CREDENTIAL_MAINTENANCE && !manual {
+            if let Some(ids) =
+                crate::server::core::credential_maintenance::claim_daily_sweep_ids(store)
+            {
+                request.account_ids = Some(ids.clone());
+                request.forced_account_ids = ids;
+            }
+        }
+        let detail = crate::server::core::maintenance::execute(store, request).await?;
         return Ok(crate::server::core::maintenance::summary(&detail));
     }
     Err("未知后端任务".to_string())

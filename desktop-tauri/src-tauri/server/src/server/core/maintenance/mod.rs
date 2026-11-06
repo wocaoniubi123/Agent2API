@@ -133,17 +133,8 @@ pub async fn execute(store: &AccountStore, request: Request) -> Result<Detail, S
     complete(store, request, guard, recorder).await
 }
 
-/// 手动触发一次**全量强刷**（不等每日时刻）。
-///
-/// ── 语义与每日那条完全一致 ────────────────────────────────────
-/// 把每个账号都当成「该刷」（`forced`），其余闸照旧：不支持刷新（比如 Loomy）、
-/// 需要重新登录、以及「正在被另一个入口刷」都会正常跳过 —— 所以它不会去打没有
-/// 续期手段的家，也不会跟单号刷新撞车。
-///
-/// ── 调用方必须异步起 ──────────────────────────────────────────
-/// 一两百个号要几分钟；HTTP 直接等会撞桌面桥 60 秒的请求上限。API 层用
-/// `crate::spawn_task` 起它、立刻回「已开始」，结果去「执行记录」看。
-pub async fn run_daily_sweep(store: &AccountStore) -> Result<Detail, String> {
+/// 组一次「全量强刷」请求：目标 = 当前全部账号，并且全部进 `forced` 列表。
+pub fn daily_sweep_request(store: &AccountStore) -> Request {
     let ids: Vec<String> = store
         .list_accounts()
         .get("accounts")
@@ -158,7 +149,49 @@ pub async fn run_daily_sweep(store: &AccountStore) -> Result<Detail, String> {
     let mut request = Request::full(CREDENTIAL, true);
     request.account_ids = Some(ids.clone());
     request.forced_account_ids = ids;
-    execute(store, request).await
+    request
+}
+
+/// **同步**抢占位：抢不到（已在跑 / 距上次不足 1 秒）就把原因直接交给 HTTP 层。
+///
+/// 为什么必须在 HTTP 里抢、而不是丢进后台再抢：后台抢失败时响应已经发出去了，
+/// 前端会显示「已开始」而实际什么都没跑 —— 用户只会以为它在排队。
+pub fn claim_daily_sweep_run(
+    store: &AccountStore,
+) -> Result<(Request, task_state::RunGuard, storage::Recorder), String> {
+    let request = daily_sweep_request(store);
+    let (guard, recorder) = prepare(&request)?;
+    Ok((request, guard, recorder))
+}
+
+/// 跑完这一轮（供 `spawn_task` 调用）：成功后写「今天已扫」标记。
+pub async fn finish_daily_sweep_run(
+    store: &AccountStore,
+    request: Request,
+    guard: task_state::RunGuard,
+    recorder: storage::Recorder,
+) -> Result<Detail, String> {
+    let detail = complete(store, request, guard, recorder).await?;
+    credential_maintenance::mark_daily_sweep_done();
+    Ok(detail)
+}
+
+/// 手动触发一次**全量强刷**（不等每日时刻）：抢占位、跑完、写今日标记，一气做完。
+///
+/// ── 语义与每日那条完全一致 ────────────────────────────────────
+/// 把每个账号都当成「该刷」（`forced`），其余闸照旧：不支持刷新（比如 Loomy）、
+/// 需要重新登录、以及「正在被另一个入口刷」都会正常跳过 —— 所以它不会去打没有
+/// 续期手段的家，也不会跟单号刷新撞车。
+///
+/// ── 谁在用 ────────────────────────────────────────────────────
+/// HTTP 那条（`POST /api/maintenance/daily-sweep/run`）走的是
+/// `claim_daily_sweep_run` + `spawn_task(finish_daily_sweep_run)`：占位必须同步抢，
+/// 抢不到直接 409，不能让界面以为「已开始」。这个一次性版本留给脚本/测试等调用方。
+pub async fn run_daily_sweep(store: &AccountStore) -> Result<Detail, String> {
+    let request = daily_sweep_request(store);
+    let detail = execute(store, request).await?;
+    credential_maintenance::mark_daily_sweep_done();
+    Ok(detail)
 }
 
 async fn complete(

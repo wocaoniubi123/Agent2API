@@ -110,19 +110,24 @@ fn daily_sweep_settings() -> (bool, (u32, u32)) {
     (enabled, (hour, minute))
 }
 
-/// 今天这一趟要不要全量强刷。
+/// 今天这一趟要不要全量强刷；要的话返回**全部账号 id**（关闭 / 未到点 / 今天已扫 → None）。
 ///
-/// 返回 `true` 时**今天的标记已经写下去了**（先落再执行）。判据是「过了没」而不是
-/// 「等于」：22:00 后的第一次 tick 就会命中，不需要卡点。
-fn claim_daily_sweep() -> bool {
+/// 返回 `Some` 时**今天的标记已经写下去了**（先落再执行）。判据是「过了没」而不是
+/// 「等于」：到点后的第一次 tick 就会命中，不需要卡点。
+///
+/// ── 为什么返回 id 而不是 bool ────────────────────────────────
+/// 调用方（`scheduled_tasks::run_backend`）要把这些 id 同时填进 `account_ids` 与
+/// `forced_account_ids` —— 「全量」的语义就落在「forced 里人人都有」这一件事上。
+/// 组装请求的活留在调度层，本函数只回答「今天轮到没有、轮到了是哪些号」。
+pub fn claim_daily_sweep_ids(store: &AccountStore) -> Option<Vec<String>> {
     let (enabled, (hour, minute)) = daily_sweep_settings();
     if !enabled {
-        return false;
+        return None;
     }
     let now = crate::server::core::beijing::now();
     use chrono::Timelike;
     if (now.hour(), now.minute()) < (hour, minute) {
-        return false;
+        return None;
     }
     let today = crate::server::core::beijing::date_key(now);
     let marker = crate::server::core::task_state::read(DAILY_SWEEP_KEY)
@@ -134,38 +139,63 @@ fn claim_daily_sweep() -> bool {
         .and_then(Value::as_str)
         == Some(today.as_str())
     {
-        return false;
+        return None;
     }
     let payload = json!({ "date": today, "startedAt": crate::server::logging::now_ms() });
     if crate::server::core::task_state::store_value(DAILY_SWEEP_KEY, payload).is_err() {
         // 标记落不下去就不跑：宁可今天少扫一次，也不要冒重复轮换的风险
         logging::log("[Accounts]", "⚠️ 全量强刷标记未能落盘，本次放弃（下一轮重试）");
-        return false;
+        return None;
     }
-    true
+    let ids: Vec<String> = store
+        .list_accounts()
+        .get("accounts")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("id").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    logging::log(
+        "[Accounts]",
+        &format!(
+            "每日全量强刷开始：{} 个账号（每日 {hour:02}:{minute:02} 后第一趟）",
+            ids.len()
+        ),
+    );
+    Some(ids)
 }
 
-/// 记下本次全量强刷的结果（只用于界面/日志，不参与去重判断）。
-fn finish_daily_sweep(refreshed: usize, skipped_count: usize, failed: usize, seconds: u64) {
+/// 手动全量强刷跑完后，把「今天已扫」标记写上。
+///
+/// ── 它唯一的后果 ────────────────────────────────────────────
+/// 今晚那次**自动**强刷会跳过（`claim_daily_sweep_ids()` 只比对 `date` 字段）。
+/// **手动按钮自己不受这个标记约束** —— 想再点几次都能点。
+///
+/// ── 为什么只写日期、不写统计 ────────────────────────────────
+/// 统计在「执行记录」里已经有了（这一次是 `source = manual` 的维护记录）；
+/// 标记里再抄一份只会让两处数字打架。写 `source` 是为了排障时能看出
+/// 「今天这次是手动抢跑的」。
+pub fn mark_daily_sweep_done() {
     let today = crate::server::core::beijing::today_key();
     let payload = json!({
         "date": today,
-        "refreshed": refreshed,
-        "skipped": skipped_count,
-        "failed": failed,
-        "seconds": seconds,
+        "source": "manual",
         "finishedAt": crate::server::logging::now_ms(),
     });
     if crate::server::core::task_state::store_value(DAILY_SWEEP_KEY, payload).is_err() {
-        logging::log("[Accounts]", "⚠️ 全量强刷结果未能落盘（只影响界面显示）");
+        logging::log(
+            "[Accounts]",
+            "⚠️ 手动强刷已完成，但「今天已扫」标记未能落盘（今晚到点的自动强刷可能还会再跑一次）",
+        );
+    } else {
+        logging::log(
+            "[Accounts]",
+            "✅ 手动全量强刷完成：今晚到点的自动强刷将跳过（该标记不影响手动再次执行）",
+        );
     }
-    logging::log_with_level(
-        "[Accounts]",
-        &format!(
-            "每日全量强刷完成：成功 {refreshed}，跳过 {skipped_count}，失败 {failed}（耗时 {seconds} 秒）"
-        ),
-        if failed > 0 { "error" } else { "info" },
-    );
 }
 
 /// 逐条结果的状态取值（**字符串本身就是给前端与日志看的契约**）
@@ -246,47 +276,7 @@ pub async fn refresh_expiring_accounts(store: &AccountStore) -> Vec<Value> {
     refresh_selected_accounts(store, None).await
 }
 
-/// 全量强刷：把每个账号都当成「该刷」，复用 `refresh_accounts` 的 forced 通道。
-///
-/// 串行（`refresh_accounts` 本身就是逐个 await）：一两百个号一轮要几分钟；
-/// 并发只会同时打上游、把风控引过来，所以这里刻意不并发。
-async fn refresh_all_forced(store: &AccountStore) -> Vec<Value> {
-    let ids: Vec<String> = store
-        .list_accounts()
-        .get("accounts")
-        .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|row| row.get("id").and_then(Value::as_str))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    let (_, (hour, minute)) = daily_sweep_settings();
-    logging::log(
-        "[Accounts]",
-        &format!(
-            "每日全量强刷开始：{} 个账号（每日 {hour:02}:{minute:02} 后第一趟）",
-            ids.len()
-        ),
-    );
-    let started = std::time::Instant::now();
-    let results = refresh_accounts(store, None, &ids).await;
-    let (refreshed, skipped_count, failed) = summarize(&results);
-    finish_daily_sweep(refreshed, skipped_count, failed, started.elapsed().as_secs());
-    results
-}
-
 pub async fn refresh_selected_accounts(store: &AccountStore, selected: Option<&[String]>) -> Vec<Value> {
-    // 每日全量强刷：只挂在**整轮**（`selected = None`）上 —— 定时调度与「检查全部」都走
-    // 这条；指定了账号的批量不掺这一脚。到点后的第一趟把每个号都当成「该刷」，其余趟
-    // 照旧只刷临期。
-    //
-    // ⚠️ 挂在这一层而不是 `refresh_expiring_accounts()`：后者只服务
-    // `/api/accounts/refresh-expiring` 这个手动端点，定时链路根本不经过它（踩过）。
-    if selected.is_none() && claim_daily_sweep() {
-        return refresh_all_forced(store).await;
-    }
     refresh_accounts(store, selected, &[]).await
 }
 

@@ -26,6 +26,9 @@ export function MaintenanceSettings({ tasks, api, dailySweep, onClose, onSaved }
   const [sweepAt, setSweepAt] = React.useState(dailySweep?.at ?? '22:00')
   const [sweeping, setSweeping] = React.useState(false)
   const [sweepHint, setSweepHint] = React.useState('')
+  const [sweepFailed, setSweepFailed] = React.useState(false)
+  // 二次确认：一按就是「全账号轮换凭据 + 几分钟」，误点代价大
+  const [confirmOpen, setConfirmOpen] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState('')
   const saving = React.useRef(false)
@@ -47,12 +50,15 @@ export function MaintenanceSettings({ tasks, api, dailySweep, onClose, onSaved }
     if (!run) return
     setSweeping(true)
     setSweepHint('')
+    setSweepFailed(false)
     try {
       await run()
       setSweepHint(t('已开始全量强刷：一两百个号要几分钟，结果会出现在「执行记录」里。'))
       onSaved()
     } catch (failure) {
-      setSweepHint(t('启动全量强刷失败：{reason}', { reason: failure instanceof Error ? failure.message : String(failure) }))
+      // 也包括「正在运行 / 距上次不足 1 秒」的 409：服务端同步抢占位，这里能立刻看到
+      setSweepFailed(true)
+      setSweepHint(t('全量强刷未能开始：{reason}', { reason: failure instanceof Error ? failure.message : String(failure) }))
     } finally {
       setSweeping(false)
     }
@@ -94,7 +100,8 @@ export function MaintenanceSettings({ tasks, api, dailySweep, onClose, onSaved }
       setBusy(false)
     }
   }
-  return <Dialog open onOpenChange={(open, event) => { if (!open) { if (busy) event.cancel(); else onClose() } }}>
+  return <>
+    <Dialog open onOpenChange={(open, event) => { if (!open) { if (busy) event.cancel(); else onClose() } }}>
     <DialogContent className='w-[min(600px,calc(100vw-32px))]'>
       <form className='flex min-h-0 flex-col' onSubmit={event => void save(event)}>
         <DialogHeader className='shrink-0 flex-col items-start gap-1'>
@@ -139,13 +146,16 @@ export function MaintenanceSettings({ tasks, api, dailySweep, onClose, onSaved }
                         结果去「执行记录」看；一两百个号要几分钟，这里不等） */}
                     {api.runDailySweep ? <Button type='button' variant='outline' size='sm'
                       disabled={busy || sweeping}
-                      onClick={() => void runSweep()}>
+                      onClick={() => setConfirmOpen(true)}>
                       {sweeping ? <Spinner /> : null}{sweeping ? t('强刷中…') : t('立即强刷')}
                     </Button> : null}
                   </div>
                   <FieldDescription>{t('到点后的第一趟执行；当天只跑一次（跑过就记下来，重启不补）。')}</FieldDescription>
                 </Field>
-                {sweepHint ? <p className='maintenance-muted'>{sweepHint}</p> : null}
+                {/* 成功 = 灰字；失败/被拒 = 红色 Alert（与弹窗顶部的错误同一视觉语言） */}
+                {sweepHint ? (sweepFailed
+                  ? <Alert variant='destructive'>{sweepHint}</Alert>
+                  : <p className='maintenance-muted'>{sweepHint}</p>) : null}
               </div> : null}
             </div>)}
           </div>
@@ -158,4 +168,20 @@ export function MaintenanceSettings({ tasks, api, dailySweep, onClose, onSaved }
       </form>
     </DialogContent>
   </Dialog>
+    {/* 二次确认：一按就是「全账号轮换凭据 + 几分钟」，误点代价大 */}
+    {confirmOpen ? <Dialog open onOpenChange={next => { if (!next) setConfirmOpen(false) }}>
+      <DialogContent className='w-[min(460px,calc(100vw-32px))]'>
+        <DialogHeader className='flex-col items-start gap-1'>
+          <DialogTitle>{t('确认执行全量强刷？')}</DialogTitle>
+          <DialogDescription className='text-xs leading-relaxed text-muted-foreground'>
+            {t('会立刻对全部账号各刷一次凭证（不支持续期、需要重新登录、正在被别处刷的账号会跳过），耗时几分钟，期间凭证会被轮换。')}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button type='button' variant='ghost' onClick={() => setConfirmOpen(false)}>{t('取消')}</Button>
+          <Button type='button' onClick={() => { setConfirmOpen(false); void runSweep() }}>{t('确认强刷')}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog> : null}
+  </>
 }

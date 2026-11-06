@@ -62,15 +62,23 @@ pub async fn entry(State(state): State<ServerState>, request: axum::extract::Req
             let (next_enabled, next_at) = crate::server::config::credential_daily_sweep();
             return ok_json(json!({ "enabled": next_enabled, "at": next_at }));
         }
-        // 手动执行一次全量强刷（不等每日时刻）。异步起：一两百个号要几分钟，
-        // 直接等会撞桌面桥 60 秒的请求上限；结果去「执行记录」看。
+        // 手动执行一次全量强刷（不等每日时刻）。
+        //
+        // 占位在**这里同步抢**：抢不到（已经在跑 / 距上次不足 1 秒）直接 409，让界面
+        // 立刻看到「正在运行」；抢到才起后台任务 —— 一两百个号要几分钟，HTTP 不能等。
         (Method::POST, ["daily-sweep", "run"]) => {
             let store = state.store().clone();
+            let (request, guard, recorder) = match maintenance::claim_daily_sweep_run(&store) {
+                Ok(parts) => parts,
+                Err(reason) => return error_response(409, reason),
+            };
             crate::spawn_task(async move {
-                if let Err(error) = maintenance::run_daily_sweep(&store).await {
+                if let Err(error) =
+                    maintenance::finish_daily_sweep_run(&store, request, guard, recorder).await
+                {
                     crate::server::logging::log(
                         "[Accounts]",
-                        &format!("手动全量强刷未能执行：{error}"),
+                        &format!("手动全量强刷未能完成：{error}"),
                     );
                 }
             });
