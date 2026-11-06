@@ -133,6 +133,34 @@ pub async fn execute(store: &AccountStore, request: Request) -> Result<Detail, S
     complete(store, request, guard, recorder).await
 }
 
+/// 手动触发一次**全量强刷**（不等每日时刻）。
+///
+/// ── 语义与每日那条完全一致 ────────────────────────────────────
+/// 把每个账号都当成「该刷」（`forced`），其余闸照旧：不支持刷新（比如 Loomy）、
+/// 需要重新登录、以及「正在被另一个入口刷」都会正常跳过 —— 所以它不会去打没有
+/// 续期手段的家，也不会跟单号刷新撞车。
+///
+/// ── 调用方必须异步起 ──────────────────────────────────────────
+/// 一两百个号要几分钟；HTTP 直接等会撞桌面桥 60 秒的请求上限。API 层用
+/// `crate::spawn_task` 起它、立刻回「已开始」，结果去「执行记录」看。
+pub async fn run_daily_sweep(store: &AccountStore) -> Result<Detail, String> {
+    let ids: Vec<String> = store
+        .list_accounts()
+        .get("accounts")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("id").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut request = Request::full(CREDENTIAL, true);
+    request.account_ids = Some(ids.clone());
+    request.forced_account_ids = ids;
+    execute(store, request).await
+}
+
 async fn complete(
     store: &AccountStore,
     request: Request,

@@ -40,6 +40,12 @@ const api: MaintenanceApi = {
       { enabled?: unknown; at?: unknown } | undefined
     return { enabled: data?.enabled === true, at: String(data?.at ?? patch.at) }
   },
+  // 手动「立即强刷」：服务端异步起、立刻返回，结果去执行记录看
+  runDailySweep: async () => {
+    const data = await panelRequest('POST', '/api/maintenance/daily-sweep/run', {}) as
+      { started?: unknown } | undefined
+    return { started: data?.started === true }
+  },
 }
 
 function AutoMaintenancePage() {

@@ -80,6 +80,8 @@ export type MaintenanceApi = {
   save(taskId: MaintenanceTaskId, patch: { enabled: boolean; interval: number }): Promise<MaintenanceTask>
   /** 保存每日全量强刷（可选：没有这个能力的调用方不传）。 */
   saveDailySweep?(patch: { enabled: boolean; at: string }): Promise<{ enabled: boolean; at: string } | undefined>
+  /** 立刻执行一次全量强刷（不等每日时刻）；服务端异步起，立刻返回 started。 */
+  runDailySweep?(): Promise<{ started?: boolean } | undefined>
 }
 
 export const MAINTENANCE_TASKS: readonly MaintenanceTaskId[] = ['credentialMaintenance', 'modelRefresh']

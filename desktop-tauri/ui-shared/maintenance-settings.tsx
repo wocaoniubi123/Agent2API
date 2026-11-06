@@ -24,6 +24,8 @@ export function MaintenanceSettings({ tasks, api, dailySweep, onClose, onSaved }
   const [drafts, setDrafts] = React.useState<Record<string, Draft>>(() => Object.fromEntries(tasks.map(task => [task.id, { enabled: task.enabled, interval: String(task.interval) }])))
   const [sweepEnabled, setSweepEnabled] = React.useState(dailySweep?.enabled ?? true)
   const [sweepAt, setSweepAt] = React.useState(dailySweep?.at ?? '22:00')
+  const [sweeping, setSweeping] = React.useState(false)
+  const [sweepHint, setSweepHint] = React.useState('')
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState('')
   const saving = React.useRef(false)
@@ -37,6 +39,22 @@ export function MaintenanceSettings({ tasks, api, dailySweep, onClose, onSaved }
     if (saved) {
       setSweepEnabled(saved.enabled)
       setSweepAt(saved.at)
+    }
+  }
+  const runSweep = async () => {
+    // 同上：可选方法先取出来，await 之后窄化会丢
+    const run = api.runDailySweep
+    if (!run) return
+    setSweeping(true)
+    setSweepHint('')
+    try {
+      await run()
+      setSweepHint(t('已开始全量强刷：一两百个号要几分钟，结果会出现在「执行记录」里。'))
+      onSaved()
+    } catch (failure) {
+      setSweepHint(t('启动全量强刷失败：{reason}', { reason: failure instanceof Error ? failure.message : String(failure) }))
+    } finally {
+      setSweeping(false)
     }
   }
   const save = async (event: React.FormEvent) => {
@@ -114,10 +132,20 @@ export function MaintenanceSettings({ tasks, api, dailySweep, onClose, onSaved }
                 </div>
                 <Field className='w-[220px]'>
                   <FieldLabel>{t('强刷时刻（HH:MM）')}</FieldLabel>
-                  <Input placeholder='22:00' disabled={busy || !sweepEnabled} value={sweepAt}
-                    onChange={event => setSweepAt(event.target.value)} />
+                  <div className='flex items-center gap-2'>
+                    <Input placeholder='22:00' disabled={busy || !sweepEnabled} value={sweepAt}
+                      onChange={event => setSweepAt(event.target.value)} />
+                    {/* 手动执行：不用等 22:00，点一下立刻全量刷一轮（服务端异步起，
+                        结果去「执行记录」看；一两百个号要几分钟，这里不等） */}
+                    {api.runDailySweep ? <Button type='button' variant='outline' size='sm'
+                      disabled={busy || sweeping}
+                      onClick={() => void runSweep()}>
+                      {sweeping ? <Spinner /> : null}{sweeping ? t('强刷中…') : t('立即强刷')}
+                    </Button> : null}
+                  </div>
                   <FieldDescription>{t('到点后的第一趟执行；当天只跑一次（跑过就记下来，重启不补）。')}</FieldDescription>
                 </Field>
+                {sweepHint ? <p className='maintenance-muted'>{sweepHint}</p> : null}
               </div> : null}
             </div>)}
           </div>
