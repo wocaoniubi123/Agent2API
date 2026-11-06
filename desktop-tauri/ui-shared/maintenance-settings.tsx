@@ -100,21 +100,25 @@ export function MaintenanceSettings({ tasks, api, dailySweep, onClose, onSaved }
                   value={drafts[task.id].interval} onChange={event => patch(task.id, { interval: event.target.value })} />
                 <FieldDescription>{t('可填 {min}–{max}', { min: task.min, max: task.max })}</FieldDescription>
               </Field>
-              {/* 每日全量强刷：只挂在凭证维护这一组下面 —— 它刷的是凭证，不是模型目录 */}
-              {task.id === 'credentialMaintenance' && api.saveDailySweep ? <div className='maintenance-setting-heading'>
-                <div>
-                  <h3>{t('每日全量强刷')}</h3>
-                  <p>{t('每天到点后的第一趟把全部账号都刷一遍（不只看临期）；续期会轮换凭据，别让两个网关同时刷同一批号。')}</p>
+              {/* 每日全量强刷：只挂在凭证维护这一组下面 —— 它刷的是凭证，不是模型目录。
+                  用 `maintenance-subsection` 画一条顶部分隔线：它是这个任务内部的第二小节，
+                  不是另一条任务（任务之间才用 `maintenance-divided`）。 */}
+              {task.id === 'credentialMaintenance' && api.saveDailySweep ? <div className='maintenance-subsection'>
+                <div className='maintenance-setting-heading'>
+                  <div>
+                    <h3>{t('每日全量强刷')}</h3>
+                    <p>{t('每天到点后的第一趟把全部账号都刷一遍（不只看临期）；续期会轮换凭据，别让两个网关同时刷同一批号。')}</p>
+                  </div>
+                  <Switch checked={sweepEnabled} disabled={busy} aria-label={t('每日全量强刷')}
+                    onCheckedChange={enabled => { setSweepEnabled(enabled); setSweepAt(previous => previous || '22:00') }} />
                 </div>
-                <Switch checked={sweepEnabled} disabled={busy} aria-label={t('每日全量强刷')}
-                  onCheckedChange={enabled => { setSweepEnabled(enabled); setSweepAt(previous => previous || '22:00') }} />
+                <Field className='w-[220px]'>
+                  <FieldLabel>{t('强刷时刻（HH:MM）')}</FieldLabel>
+                  <Input placeholder='22:00' disabled={busy || !sweepEnabled} value={sweepAt}
+                    onChange={event => setSweepAt(event.target.value)} />
+                  <FieldDescription>{t('到点后的第一趟执行；当天只跑一次（跑过就记下来，重启不补）。')}</FieldDescription>
+                </Field>
               </div> : null}
-              {task.id === 'credentialMaintenance' && api.saveDailySweep ? <Field className='w-[220px]'>
-                <FieldLabel>{t('强刷时刻（HH:MM）')}</FieldLabel>
-                <Input placeholder='22:00' disabled={busy || !sweepEnabled} value={sweepAt}
-                  onChange={event => setSweepAt(event.target.value)} />
-                <FieldDescription>{t('到点后的第一趟执行；当天只跑一次（跑过就记下来，重启不补）。')}</FieldDescription>
-              </Field> : null}
             </div>)}
           </div>
           <p className='maintenance-muted'>{t('关闭自动维护不影响手动执行，也不影响对话请求所需的按需续期。')}</p>

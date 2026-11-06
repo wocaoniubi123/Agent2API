@@ -60,6 +60,23 @@
 
 .maintenance-divided { border-top: 1px solid var(--hairline); }
 
+/*
+ * 组内小节（目前只有「凭证维护 → 每日全量强刷」这一处）。
+ *
+ * 与 `.maintenance-divided` 的区别：那个画在**任务与任务之间**（整组宽），这里画在
+ * **任务内部的第二小节**上 —— 父级 `.maintenance-setting` 已经有 14px 16px 的内边距，
+ * 所以只补上间距与顶部分隔线，不再加横向内边距（否则线会被缩进、和分组边框错位）。
+ */
+.maintenance-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--hairline);
+}
+.maintenance-subsection .maintenance-setting-heading { margin-bottom: 0; }
+
 /* ── 状态与汇总（维护页三处共用，见 maintenance-shared.tsx） ── */
 .maintenance-status { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 12px; white-space: nowrap; }
 
