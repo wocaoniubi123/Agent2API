@@ -243,11 +243,6 @@ pub async fn refresh_checked(
 }
 
 pub async fn refresh_expiring_accounts(store: &AccountStore) -> Vec<Value> {
-    // 每日全量强刷：到了设定时刻后的**第一趟**改成「每个账号都刷」，其余趟照旧只刷
-    // 临期。这条路与 10 分钟轮次共用同一个 task id 的 claim，两者不可能同时跑。
-    if claim_daily_sweep() {
-        return refresh_all_forced(store).await;
-    }
     refresh_selected_accounts(store, None).await
 }
 
@@ -283,6 +278,15 @@ async fn refresh_all_forced(store: &AccountStore) -> Vec<Value> {
 }
 
 pub async fn refresh_selected_accounts(store: &AccountStore, selected: Option<&[String]>) -> Vec<Value> {
+    // 每日全量强刷：只挂在**整轮**（`selected = None`）上 —— 定时调度与「检查全部」都走
+    // 这条；指定了账号的批量不掺这一脚。到点后的第一趟把每个号都当成「该刷」，其余趟
+    // 照旧只刷临期。
+    //
+    // ⚠️ 挂在这一层而不是 `refresh_expiring_accounts()`：后者只服务
+    // `/api/accounts/refresh-expiring` 这个手动端点，定时链路根本不经过它（踩过）。
+    if selected.is_none() && claim_daily_sweep() {
+        return refresh_all_forced(store).await;
+    }
     refresh_accounts(store, selected, &[]).await
 }
 

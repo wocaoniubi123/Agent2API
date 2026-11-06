@@ -71,8 +71,10 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin-top: 14px;
-  padding-top: 14px;
+  /* 左右各拉回父级的 16px 内边距：让这条线与「任务之间」的 .maintenance-divided 等长
+     （那条画在有 padding 的元素自己身上，border 本身就是整宽）。内容再用 padding 缩回来。 */
+  margin: 14px -16px 0;
+  padding: 14px 16px 0;
   border-top: 1px solid var(--hairline);
 }
 .maintenance-subsection .maintenance-setting-heading { margin-bottom: 0; }
