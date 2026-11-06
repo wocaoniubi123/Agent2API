@@ -48,6 +48,66 @@ let tableEl: HTMLTableElement | null = null
 /** 表头已经同步过的「表格在不在 + 可见列与对齐」签名：只有它变了才重排表头（见 syncHead） */
 let headSignature = ''
 
+/**
+ * 「查询余额」旁边的并发上限输入框。
+ *
+ * 值持久化在网关配置里（`usageQueryConcurrency`）：重启、清缓存、换浏览器都还在。
+ * `0` = 不限制（改造前的行为）、`1` = 串行、`N` = 同时最多 N 个 —— 一批跑完再发
+ * 下一批。省的是上游边缘风控：批量查询以前是全部账号一起发，一两百个号会直接被
+ * 判成异常流量（实测 50 连发就吃 403）。
+ */
+function UsageConcurrencyField() {
+  const [draft, setDraft] = React.useState('5')
+  const [saved, setSaved] = React.useState(false)
+  React.useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const response = await fetch('/api/accounts/usage/concurrency', { credentials: 'include' })
+        const payload = await response.json()
+        const value = payload?.data?.value
+        if (alive && typeof value === 'number') setDraft(String(value))
+      } catch {
+        // 读不到就保持默认 5：这是显示值，改动本身由失焦时的 POST 兜底
+      }
+    })()
+    return () => { alive = false }
+  }, [])
+  const save = async () => {
+    const value = Number.parseInt(draft, 10)
+    if (!Number.isFinite(value) || value < 0 || value > 32) {
+      toast(t('并发数必须在 0..=32 之间'), 'err')
+      return
+    }
+    try {
+      const response = await fetch('/api/accounts/usage/concurrency', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value }),
+      })
+      const payload = await response.json()
+      if (!response.ok || payload?.success === false) throw new Error(payload?.error || '保存失败')
+      setDraft(String(payload?.data?.value ?? value))
+      setSaved(true)
+      window.setTimeout(() => setSaved(false), 1200)
+    } catch (error) {
+      toast(t('保存并发数失败：{message}', { message: String((error as Error)?.message || error) }), 'err')
+    }
+  }
+  return (
+    <div className='flex items-center gap-1.5'
+      title={t('批量查询余额的并发数：0 = 不限制，1 = 串行，N = 同时最多 N 个（回车或失焦保存，立即生效）')}>
+      <Label htmlFor='usage-concurrency' className='text-xs text-subtle'>{t('并发')}</Label>
+      <Input id='usage-concurrency' className='h-8 w-16 text-center' inputMode='numeric' value={draft}
+        onChange={event => setDraft(event.target.value.replace(/[^0-9]/g, '').slice(0, 2))}
+        onBlur={() => void save()}
+        onKeyDown={event => { if (event.key === 'Enter') void save() }} />
+      {saved ? <span className='text-xs text-subtle'>{t('已保存')}</span> : null}
+    </div>
+  )
+}
+
 /** 当前可见列（顺序即配置顺序；列设置未就绪时退回全部列） */
 function visibleColumns(): Array<(typeof ACCOUNT_COLUMNS)[number] & { align: 'left' | 'center' | 'right' }> {
   return colHandle ? colHandle.apply(ACCOUNT_COLUMNS) : ACCOUNT_COLUMNS
@@ -464,6 +524,7 @@ function AccountsPage() {
               disabled={store.usageBusy || !all.some(supportsUsage)}
               title={t('查询全部账号的余额（含已禁用账号 —— 禁用只表示不参与转发）')}
               onClick={() => void queryAllUsage()}>{store.usageBusy ? t('查询中…') : t('查询余额')}</Button>
+            <UsageConcurrencyField />
           </div>
         </div>
 

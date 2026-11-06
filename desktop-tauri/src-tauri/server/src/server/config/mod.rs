@@ -186,6 +186,12 @@ pub struct RuntimeConfig {
     /// 就生效，不重启进程），从 `Value` 里翻一次要处理类型判定，解析一次存下来
     /// 最省事 —— 这条判定在转发热路径上。
     debug_mode: bool,
+    /// 余额 / 积分批量查询的并发上限（账号页「查询余额」旁边那一格）。
+    ///
+    /// 与 `debug_mode` 同一理由：批量查询**每次执行**都要取一次（改完下一个
+    /// 「查询余额」立刻按新值跑），从 `Value` 里翻一次要处理类型判定，解析一次
+    /// 存下来最省事。语义见 `KEY_USAGE_QUERY_CONCURRENCY`（0 = 不限制）。
+    usage_query_concurrency: u32,
     /// 规则在配置读取 / 保存时编译，请求间共享，同一次转发使用完整快照。
     sanitize: SanitizeSettings,
     /// 开发者角色兼容开关（设置页「网关 → 开发者角色兼容」）。
@@ -311,6 +317,11 @@ impl RuntimeConfig {
     /// 调试模式是否开启（转发层每次发送前判一次，见字段说明）
     pub fn debug_mode(&self) -> bool {
         self.debug_mode
+    }
+
+    /// 批量余额查询的并发上限（`0` = 不限制，见字段说明）
+    pub fn usage_query_concurrency(&self) -> u32 {
+        self.usage_query_concurrency
     }
 
     /// 出站指纹脱敏是否开启（转发层每次发送前判一次，见字段说明）
@@ -597,6 +608,13 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
         // 只有字面 `true` 算开启（手改文件写 "1" / "yes" 一律当关）：与
         // 「写坏回落」同一取向 —— 这个开关控制是否把凭据落盘，宁可少采
         debug_mode: raw.get(KEY_DEBUG_MODE).and_then(Value::as_bool).unwrap_or(false),
+        // 批量余额查询的并发上限：`0` = 不限制；缺失按默认 5；越界夹到上限
+        // （再高等于不限制，夹紧纯粹防手滑，不涉及语义）。
+        usage_query_concurrency: raw
+            .get(KEY_USAGE_QUERY_CONCURRENCY)
+            .and_then(Value::as_u64)
+            .map(|value| value.min(USAGE_QUERY_CONCURRENCY_MAX as u64) as u32)
+            .unwrap_or(DEFAULT_USAGE_QUERY_CONCURRENCY),
         sanitize: sanitize_config::from_raw(&raw),
         // 只有字面 `false` 算关闭：**默认开**（缺失 → true）。改写语义无损
         // （developer 与 system 在 OpenAI 语义上等价），而默认关会让发 developer
@@ -1874,6 +1892,34 @@ pub fn set_routing(patch: RoutingPatch) -> bool {
 /// 与 `set_retry` 同一模式：内存快照与 raw 底稿一起改 —— 前者让下一个请求
 /// 立刻用新值（转发层逐请求读快照），后者保证写盘时不吃掉 config.json 里的
 /// 其它字段。返回是否落盘成功（失败时内存仍已更新，见调用点）。
+/// 批量余额查询的并发上限（`0` = 不限制）。未初始化时给默认值。
+///
+/// 与 `scheduled_settings()` 同一取舍：每次批量查询都要取一次，读锁取一个
+/// `Copy` 值即可，不克隆整份 raw。
+pub fn usage_query_concurrency() -> u32 {
+    if let Ok(guard) = CONFIG.read() {
+        if let Some(config) = guard.as_ref() {
+            return config.usage_query_concurrency;
+        }
+    }
+    DEFAULT_USAGE_QUERY_CONCURRENCY
+}
+
+/// 写入批量余额查询的并发上限（越界夹到 `USAGE_QUERY_CONCURRENCY_MAX`）。
+///
+/// 与 `set_debug_mode` 同一模式：内存快照与 raw 底稿一起改 —— 前者让下一次
+/// 「查询余额」立刻按新值跑，后者保证写盘时不吃掉配置里的其它字段。
+pub fn set_usage_query_concurrency(value: u32) -> bool {
+    let clamped = value.min(USAGE_QUERY_CONCURRENCY_MAX);
+    update(|config| {
+        config.raw.insert(
+            KEY_USAGE_QUERY_CONCURRENCY.to_string(),
+            Value::from(clamped as i64),
+        );
+        config.usage_query_concurrency = clamped;
+    })
+}
+
 pub fn set_debug_mode(enabled: bool) -> bool {
     update(|config| {
         config

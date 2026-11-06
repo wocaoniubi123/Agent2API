@@ -346,6 +346,34 @@ pub(crate) fn supports_usage_provider(provider_id: &str) -> bool {
 /// 唯一差别就是「查一个」还是「查全部可用」。
 ///
 /// 未知 id 由 `resolve_batch_targets` 报 404「账号不存在」。
+/// 按并发上限跑一批 future，**保持输入顺序**。
+///
+/// `limit == 0` 或超过批大小 = 不限制（一次全发，即改造前的行为）。
+///
+/// ── 为什么是「分块 + join_all」而不是 `buffer_unordered` ─────────
+/// 调用方（`query_all`）依赖「结果与 `queried` 同序」逐行落库；`buffer_unordered`
+/// 出来的是完成顺序，得再按索引重排。分块天然保序，且并发度严格等于 `limit`。
+async fn run_limited<F, T>(futures: Vec<F>, limit: usize) -> Vec<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    if limit == 0 || limit >= futures.len() {
+        return futures::future::join_all(futures).await;
+    }
+    let mut out = Vec::with_capacity(futures.len());
+    let mut chunk = Vec::with_capacity(limit);
+    for future in futures {
+        chunk.push(future);
+        if chunk.len() == limit {
+            out.extend(futures::future::join_all(chunk.drain(..)).await);
+        }
+    }
+    if !chunk.is_empty() {
+        out.extend(futures::future::join_all(chunk).await);
+    }
+    out
+}
+
 pub async fn query_all(store: &AccountStore, id: Option<&str>) -> Result<Value, TargetError> {
     let single = id.filter(|value| !value.is_empty());
     // `provider = None`：跨四家取目标（签到那条仍按 provider 过滤）
@@ -358,7 +386,13 @@ pub async fn query_all(store: &AccountStore, id: Option<&str>) -> Result<Value, 
         .iter()
         .map(|account| query_usage_for(store, account))
         .collect();
-    let mut results = futures::future::join_all(futures).await;
+    // 并发上限：单查恒 1；批量按配置值（`0` = 不限制，见 KEY_USAGE_QUERY_CONCURRENCY）
+    let limit = if single.is_some() {
+        1
+    } else {
+        crate::server::config::usage_query_concurrency() as usize
+    };
+    let mut results = run_limited(futures, limit).await;
     // 每行结论落记录表 + 跑「余额不足自动禁用」钩子：手动与自动两条路径在
     // 这里汇合（见模块头）。账号对象与结果行按构造顺序一一对齐
     // （`queried` 与 `results` 同源同序），配置就在手上，不必回读账号列表。
@@ -582,7 +616,9 @@ async fn sweep_due(store: &AccountStore) {
         .iter()
         .map(|(account, _)| query_usage_for(store, account))
         .collect();
-    let results = futures::future::join_all(futures).await;
+    // 定时那一轮同样受并发上限约束（这里没有界面入参，按配置值跑）
+    let results =
+        run_limited(futures, crate::server::config::usage_query_concurrency() as usize).await;
     for ((account, _), row) in due.iter().zip(results.into_iter()) {
         write_row_record(&row);
         enforce_low_balance_disable(store, account, &row);

@@ -19,12 +19,48 @@
 //! 供界面在**不点按钮**的情况下跟上自动查询的节奏（每账号到期的写法下，
 //! 界面轮询一份快照就能拿到全部账号的最新读数）。
 
+use axum::body::Bytes;
 use axum::response::Response;
+use serde_json::{json, Value};
 
+use crate::server::config;
 use crate::server::core::usage_query;
 use crate::server::errors::management_error;
-use crate::server::http::{ok_json, query_param};
+use crate::server::http::{ok_json, parse_body, query_param};
 use crate::server::ServerState;
+
+/// GET /api/accounts/usage/concurrency —— 批量余额查询的并发上限（`0` = 不限制）。
+///
+/// 账号页「查询余额」旁边那一格读它；持久化在配置里（`usageQueryConcurrency`），
+/// 重启、清缓存、换浏览器都还在。
+pub async fn usage_concurrency() -> Response {
+    ok_json(json!({ "value": config::usage_query_concurrency() }))
+}
+
+/// POST /api/accounts/usage/concurrency —— body `{ "value": 0..=32 }`。
+///
+/// 与 `GET` 同一取值口径；越界直接 400（不静默夹紧 —— 用户填了 99 该看到被拒，
+/// 而不是以为 99 生效了）。
+pub async fn set_usage_concurrency(body: &Bytes) -> Response {
+    let payload = match parse_body(body) {
+        Ok(value) => value,
+        Err(error) => return management_error(400, error.message),
+    };
+    let Some(value) = payload.get("value").and_then(Value::as_i64) else {
+        return management_error(400, "缺少 value（0 = 不限制，1 = 串行，N = 同时最多 N 个）");
+    };
+    if !(0..=crate::server::config::USAGE_QUERY_CONCURRENCY_MAX as i64).contains(&value) {
+        return management_error(
+            400,
+            format!(
+                "并发数必须在 0..={} 之间",
+                crate::server::config::USAGE_QUERY_CONCURRENCY_MAX
+            ),
+        );
+    }
+    let saved = config::set_usage_query_concurrency(value as u32);
+    ok_json(json!({ "value": config::usage_query_concurrency(), "saved": saved }))
+}
 
 /// GET /api/accounts/usage
 ///

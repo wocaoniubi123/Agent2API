@@ -145,6 +145,26 @@ pub const KEY_CLINE_UPSTREAM_HEADERS: &str = "clineUpstreamHeaders";
 /// （见 `http::panel_router` 与 `http::cors`）。
 pub const KEY_CORS_ENABLED: &str = "corsEnabled";
 
+/// 余额 / 积分**批量查询**的并发上限的键（账号页「查询余额」旁边那一格）。
+///
+/// ── 为什么需要它 ────────────────────────────────────────────
+/// 批量查询以前是 `join_all`（全部账号一起发）。一两百个账号同时打同一个余额
+/// 接口，上游边缘会直接判成异常流量：实测 50 连发就能拿到
+/// `403 + X-TT-System-Error: 3`（请求根本没进应用层）。
+///
+/// 语义：`0` = 不限制（保持改造前的行为）；`1` = 串行；`N` = 同时最多 N 个，
+/// 一批跑完再发下一批。**只管批量余额查询**，与凭证刷新无关（那条本来就是串行）。
+pub const KEY_USAGE_QUERY_CONCURRENCY: &str = "usageQueryConcurrency";
+
+/// 批量余额查询的默认并发数。
+///
+/// 5 是「一两百个账号几十秒查完」与「不触发上游风控」之间的折中；改动前是无限
+/// 并发，也是那条 403 的来源。
+pub const DEFAULT_USAGE_QUERY_CONCURRENCY: u32 = 5;
+
+/// 并发数上限。再高等于「不限制」，没有实际意义，纯粹防手滑。
+pub const USAGE_QUERY_CONCURRENCY_MAX: u32 = 32;
+
 /// 「丢弃保活换行分片」开关的键（详见 `core::upstream::sse::is_newline_keepalive`）。
 ///
 /// 打开后，**声明了该能力位的**提供商（目前只有 WorkBuddy 与 AutoClaw）在下发

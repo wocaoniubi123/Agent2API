@@ -406,6 +406,11 @@ pub async fn dispatch(
         ("GET", "usage/snapshot") => {
             return super::accounts_usage::accounts_usage_snapshot(&state).await
         }
+        // 批量查询的并发上限（账号页「查询余额」旁边那一格；持久化在配置里）
+        ("GET", "usage/concurrency") => return super::accounts_usage::usage_concurrency().await,
+        ("POST", "usage/concurrency") => {
+            return super::accounts_usage::set_usage_concurrency(body).await
+        }
         // 账号级活跃连接数（账号页「连接数」列；见 `core::upstream::connections`）
         ("GET", "connections") => return account_connections(&state),
         ("POST", "checkin") => return accounts_checkin(&state, body).await,
