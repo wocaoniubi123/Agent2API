@@ -225,7 +225,15 @@ fn create_main_window(app: &AppHandle, visible: bool) -> tauri::Result<tauri::We
     let builder = WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("index.html".into()))
         .decorations(false);
 
+    // WebView2 的用户数据目录（Cache / localStorage / IndexedDB）显式钉到配置目录下。
+    //
+    // 不指定时 Tauri 在 Windows 上会自己填 `app_local_data_dir()`
+    // （`%LOCALAPPDATA%\com.agent2api`，见 tauri 的 manager/webview.rs：
+    // 「we need to force a data_directory but we do respect user-specification」）。
+    // 这里给值就是为了让它不填 —— 安装目录之外不留这个软件的缓存，
+    // 整个安装目录拷走即迁移。
     builder
+        .data_directory(agent2api_server::paths::config_dir().join("webview"))
         .title(app_title())
         .inner_size(WIN_WIDTH, WIN_HEIGHT)
         .min_inner_size(WIN_MIN_WIDTH, WIN_MIN_HEIGHT)
@@ -327,7 +335,9 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
 
-            // ── 第一步：一次性配置目录迁移（`~/.workbuddy-proxy` → `~/.agent2api`）──
+            // ── 第一步：一次性配置目录迁移（`~/.workbuddy-proxy` → 当前配置目录）──
+            // 只处理 1.x 的老名字。上一版留在 `~/.agent2api` 的数据不会自动搬到
+            // exe 旁的新位置 —— 升级时由用户把备份解压进去，启动期不做无声的大拷贝。
             // 必须是**全进程最早**的一处配置目录访问：晚于任何写盘（桌面设置、
             // config.json、日志库、账号库）时，一旦迁移失败，后续写盘就会把新目录
             // 建出来，`target.exists()` 从此为真，迁移再也无法重试，用户看到的是

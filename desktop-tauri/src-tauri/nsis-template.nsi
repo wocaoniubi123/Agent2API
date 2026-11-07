@@ -709,6 +709,17 @@ Section Install
     File /a "/oname={{this}}" "{{no-escape @key}}"
   {{/each}}
 
+  ; 让普通用户能在安装目录里建/写 `data\`。
+  ;
+  ; 网关的全部运行时产物（数据库、账号密钥、插件、JS 运行时、日志、
+  ; WebView 缓存）都落在 `$INSTDIR\data` —— 装到 Program Files 时
+  ; 那个目录归管理员所有，非提权启动的进程建不出子目录，网关会回落到
+  ; 用户目录。这里把安装目录的继承写权限交给 Users（S-1-5-32-545），
+  ; 与「装到任意目录、产物就跟着那个目录」的目标配套。
+  ; icacls 的 (OI)(CI)F = 对象继承 + 容器继承 + 完全控制；/T 把已有文件也授上
+  ; （继承只对新文件生效）；/C 出错继续。返回码放进 $0，失败不阻断安装。
+  ExecWait "$SYSDIR\icacls.exe $\"$INSTDIR$\" /grant *S-1-5-32-545:(OI)(CI)F /T /C" $0
+
   ; Create file associations
   {{#each file_associations as |association| ~}}
     {{#each association.ext as |ext| ~}}
