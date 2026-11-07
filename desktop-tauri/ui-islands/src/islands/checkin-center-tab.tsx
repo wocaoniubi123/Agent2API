@@ -244,6 +244,20 @@ function byStatus<T>(rows: T[], filter: StatusFilter, doneOf: (row: T) => boolea
 }
 
 /**
+ * 未完成 / 还能做的排在最上面，已经办完的沉到最底下。
+ *
+ * 只换顺序、不换判据：`doneOf` 一律用各档位现成的那个谓词
+ * （`onboardingDone` / `growthDone`），口径不会和筛选器里的计数漂移。
+ * 没查询过的账号在谓词里算「未完成」，于是也排在上面 —— 正是想要的：
+ * 先看见「要做事的」。
+ *
+ * `Array.prototype.sort` 自 ES2019 起保证稳定，同组内保持原来的账号顺序。
+ */
+function pendingFirst<T>(rows: T[], doneOf: (row: T) => boolean): T[] {
+  return [...rows].sort((a, b) => Number(doneOf(a)) - Number(doneOf(b)))
+}
+
+/**
  * 展开区里的一行明细（账号 / 任务 / 成长三处共用同一档字号与节奏）。
  *
  * 原来这里是张表格（账号 / 今日签到 / 上次签到时间 / 操作）—— 表头占一行、
@@ -626,7 +640,10 @@ export function CenterTab({ center }: { center: CheckinCenter }): React.ReactEle
     if (cache.settled) return true
     return !cache.tasks.some(task => !task.done && !task.blocked)
   }
-  const onboardingRows = byStatus(extras.onboarding, onboardingFilter, onboardingDone)
+  const onboardingRows = pendingFirst(
+    byStatus(extras.onboarding, onboardingFilter, onboardingDone),
+    onboardingDone,
+  )
   const onboardingDoneCount = extras.onboarding.filter(onboardingDone).length
 
   /** 成长任务：任务树查过、且手上没有还能完成的 = 已完成 */
@@ -636,7 +653,10 @@ export function CenterTab({ center }: { center: CheckinCenter }): React.ReactEle
     return cache.tasks.filter(task => growthTaskRunnable(task, 'full'))
       .every(task => growthTaskCompleted(task))
   }
-  const growthRows = byStatus(extras.growth, growthFilter, growthDone)
+  const growthRows = pendingFirst(
+    byStatus(extras.growth, growthFilter, growthDone),
+    growthDone,
+  )
   const growthDoneCount = extras.growth.filter(growthDone).length
 
   // 卡片级批量：只碰「还有事要做」的账号。判定复用上面两个 done 谓词，
