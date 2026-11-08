@@ -25,6 +25,7 @@ import {
 } from './accounts-panels'
 import { bindQueueDrag, type QueueDrop } from './accounts-queue-drag'
 import { AccountsDialogs } from './accounts-dialogs'
+import { TodayGainDialog } from './accounts-today-gain'
 import { HiddenAccountsNotice } from './accounts-hidden-notice'
 import { activeGroupSortRules, manualOrderBlockedMessage } from './accounts-group-settings'
 import { Badge, Spinner } from '@ui'
@@ -274,6 +275,8 @@ function AccountsPage() {
   const allCollapsed = allGroups.length > 0 && allGroups.every(group => store.collapsed.has(group.provider))
   /** 宽屏平铺、窄屏抽屉，筛选值始终由同一份 store 维护。 */
   const [filterOpen, setFilterOpen] = React.useState(false)
+  /** 「今日积分获得」弹窗（汇总今天的发放：哪个号、通过什么、多少分） */
+  const [todayGainOpen, setTodayGainOpen] = React.useState(false)
   /** 当前生效的筛选条数：给「筛选」按钮上的角标用，让用户知道列表被收窄了 */
   const activeFilterCount =
     (store.filter.provider !== 'all' ? 1 : 0)
@@ -518,9 +521,17 @@ function AccountsPage() {
               disabled={store.usageBusy || !all.some(supportsUsage)}
               title={t('查询全部账号的余额（含已禁用账号 —— 禁用只表示不参与转发）')}
               onClick={() => void queryAllUsage()}>{store.usageBusy ? t('查询中…') : t('查询余额')}</Button>
+            {/* 汇总今天的积分发放：哪个号、通过什么拿的、一共多少分。
+                数据来自余额快照里的 credits[]，不需要新接口（见 accounts-today-gain 模块头） */}
+            <Button id='btn-today-gain' variant='outline'
+              disabled={!all.some(supportsUsage)}
+              title={t('今天的积分发放汇总：按账号、按获得途径、逐笔明细')}
+              onClick={() => setTodayGainOpen(true)}>{t('今日积分')}</Button>
             <UsageConcurrencyField />
           </div>
         </div>
+
+        <TodayGainDialog open={todayGainOpen} onClose={() => setTodayGainOpen(false)} />
 
         {store.listError ? (
           <Alert variant='destructive' className='acct-load-error' role='alert'>
