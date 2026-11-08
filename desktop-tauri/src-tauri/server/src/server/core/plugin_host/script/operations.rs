@@ -196,6 +196,15 @@ async fn switch(
         }
         super::runtime::clear_owners();
         guard.clear_adapters();
+        // 这次新装的包加载失败：把它已经解到磁盘的目录删掉，不然会永远留在
+        // `packages\` 下变成一个既不在 registry 里、也不会被任何流程引用的孤儿。
+        // 只删「after 有、before 没有」的包 —— 更新场景是同一个 id 复用旧目录，
+        // 按 id 判断就不会误删仍可用的旧版本。
+        for package in after.packages.iter() {
+            if !before.packages.iter().any(|item| item.id == package.id) {
+                remove_package_dir(&package.directory);
+            }
+        }
         if let Some(executable) = old_executable {
             let mut restored = before;
             if let Err(recovery) =
@@ -207,8 +216,38 @@ async fn switch(
         return Err(format!("{error}；原安装记录已保留"));
     }
     drop(guard);
+    // 成功之后才删目录：加载失败时目录要留着，用户可以直接重试或手动核对。
+    // 卸载与「更新时被换掉的 id」都走这里 —— 只删 before 有、after 没有的包。
+    for package in before.packages.iter() {
+        if !after.packages.iter().any(|item| item.id == package.id) {
+            remove_package_dir(&package.directory);
+        }
+    }
     crate::server::core::providers::catalog::invalidate();
     crate::server::core::checkin_schedules::extend_plugin_providers_once();
     plugin_host::schedules::wake();
     Ok(())
+}
+
+/// 删掉一个脚本插件的磁盘目录；失败只记日志，不阻断安装 / 卸载流程。
+///
+/// `package.directory` 形如 `script-<id>/<hash>`，而 `packages\` 下第一层就是
+/// `script-<id>` —— 取第一段删整个包目录，否则只删 hash 段会留下一个空壳。
+///
+/// 复用 `install.rs` 的 `remove_dir_retrying`：Windows 上杀软扫描 / 索引服务
+/// 占着目录时 `remove_dir_all` 会立刻失败，那个重试壳专治这类暂时性占用；
+/// 真的删不掉（比如插件进程还活着）就留一行日志，目录留到下次再说。
+fn remove_package_dir(directory: &str) {
+    let Some(top) = directory.split('/').next().filter(|part| !part.is_empty()) else {
+        return;
+    };
+    let path = super::root().join("packages").join(top);
+    if let Err(error) = super::super::install::remove_dir_retrying(&path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            crate::server::logging::log(
+                "Plugin",
+                &format!("清理脚本插件目录失败 {}: {error}", path.display()),
+            );
+        }
+    }
 }
