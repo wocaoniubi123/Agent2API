@@ -351,7 +351,20 @@ impl AccountStore {
                     .unwrap_or(false)
             })
             .count();
-        logging::log(
+        // 级别按**结果**给，不交给 `infer_level` 从文案里猜：设置摘要本身就带
+        // 「失败重试 → N 次」这种字段名，含「失败」二字会被判成 error —— 正常
+        // 的批量修改因此进「错误」筛选、还会让面板导航的错误徽标 +1。
+        // 这是 `logging.rs` 那条 `infer_level_misreads_successful_import_summary_as_error`
+        // 钉住的同一类坑，账号导入汇总（`account_transfer.rs`）已是同样写法。
+        // 跳过不算失败：有账号没被处理要看见，但它不是错误，降一档给 warn。
+        let level = if !failed.is_empty() {
+            "error"
+        } else if !skipped.is_empty() {
+            "warn"
+        } else {
+            "info"
+        };
+        logging::log_with_level(
             "[Accounts]",
             &format!(
                 "🔀 批量修改 {} 个账号（{}）: 成功 {changed_count} 个{}{}",
@@ -368,6 +381,7 @@ impl AccountStore {
                     format!("，跳过 {} 个", skipped.len())
                 }
             ),
+            level,
         );
         Ok(json!({ "ok": ok, "failed": failed, "skipped": skipped, "list": snapshot }))
     }
