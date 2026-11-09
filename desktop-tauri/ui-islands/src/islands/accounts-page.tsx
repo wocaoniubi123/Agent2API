@@ -8,7 +8,6 @@ import { t } from '../i18n'
 import { Button, Checkbox, Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList, ComboboxTrigger, ComboboxValue, Input, ResponsiveSheet, SegmentedControl, cn, Card, Label, Empty, Table, TableBody, TableRow, TableCell } from '@ui'
 import { TableFooter, useClientPaging } from './table-shell'
 import { shared, toast, type AccountRecord, type ColSettingsHandle } from './accounts-shared'
-import { panelRequest, readNumberSetting } from './panel-request'
 import { isDesktopAccount, isEnabled, providerOf, supportsInviteCode, supportsUsage } from './accounts-domain'
 import { ACCOUNT_COLUMNS, bindColumnGrips, columnWidths, tableMinWidth } from './accounts-columns'
 import {
@@ -51,59 +50,6 @@ let colSettingsRetry = 0
 let tableEl: HTMLTableElement | null = null
 /** 表头已经同步过的「表格在不在 + 可见列与对齐」签名：只有它变了才重排表头（见 syncHead） */
 let headSignature = ''
-
-/**
- * 「查询余额」旁边的并发上限输入框。
- *
- * 值持久化在网关配置里（`usageQueryConcurrency`）：重启、清缓存、换浏览器都还在。
- * `0` = 不限制（改造前的行为）、`1` = 串行、`N` = 同时最多 N 个 —— 一批跑完再发
- * 下一批。省的是上游边缘风控：批量查询以前是全部账号一起发，一两百个号会直接被
- * 判成异常流量（实测 50 连发就吃 403）。
- */
-function UsageConcurrencyField() {
-  const [draft, setDraft] = React.useState('5')
-  const [saved, setSaved] = React.useState(false)
-  React.useEffect(() => {
-    let alive = true
-    void (async () => {
-      try {
-        // 双路请求：桌面壳走 api_request 桥、网页面板走同源 fetch（见 panel-request.ts）
-        const value = await readNumberSetting('/api/accounts/usage/concurrency')
-        if (alive && value !== undefined) setDraft(String(value))
-      } catch {
-        // 读不到就保持默认 5：这是显示值，改动本身由失焦时的 POST 兜底
-      }
-    })()
-    return () => { alive = false }
-  }, [])
-  const save = async () => {
-    const value = Number.parseInt(draft, 10)
-    if (!Number.isFinite(value) || value < 0 || value > 32) {
-      toast(t('并发数必须在 0..=32 之间'), 'err')
-      return
-    }
-    try {
-      const data = await panelRequest('POST', '/api/accounts/usage/concurrency', { value }) as
-        { value?: unknown } | undefined
-      setDraft(String(typeof data?.value === 'number' ? data.value : value))
-      setSaved(true)
-      window.setTimeout(() => setSaved(false), 1200)
-    } catch (error) {
-      toast(t('保存并发数失败：{message}', { message: String((error as Error)?.message || error) }), 'err')
-    }
-  }
-  return (
-    <div className='flex items-center gap-1.5'
-      title={t('批量查询余额的并发数：0 = 不限制，1 = 串行，N = 同时最多 N 个（回车或失焦保存，立即生效）')}>
-      <Label htmlFor='usage-concurrency' className='text-xs text-subtle'>{t('并发')}</Label>
-      <Input id='usage-concurrency' className='h-8 w-16 text-center' inputMode='numeric' value={draft}
-        onChange={event => setDraft(event.target.value.replace(/[^0-9]/g, '').slice(0, 2))}
-        onBlur={() => void save()}
-        onKeyDown={event => { if (event.key === 'Enter') void save() }} />
-      {saved ? <span className='text-xs text-subtle'>{t('已保存')}</span> : null}
-    </div>
-  )
-}
 
 /** 当前可见列（顺序即配置顺序；列设置未就绪时退回全部列） */
 function visibleColumns(): Array<(typeof ACCOUNT_COLUMNS)[number] & { align: 'left' | 'center' | 'right' }> {
@@ -543,7 +489,6 @@ function AccountsPage() {
                   onClick={() => setInviteOpen(true)}>{t('邀请码')}</Button>
                 )
               : null}
-            <UsageConcurrencyField />
           </div>
         </div>
 
