@@ -29,7 +29,7 @@
 .req-head {
   display: grid;
   grid-template-columns: var(--req-cols,
-    92px minmax(0, 1.1fr) 52px 96px minmax(0, 1.3fr) 110px 140px 96px 96px 72px minmax(0, 1.6fr) minmax(0, 1.2fr) 60px);
+    92px minmax(0, 1.1fr) 52px 96px minmax(0, 1.3fr) 110px 140px 96px 96px 72px minmax(0, 1.6fr) 76px minmax(0, 1.2fr) 60px);
   gap: 12px;
   align-items: center;
   padding: 10px 14px;
@@ -330,6 +330,24 @@
 }
 .req-row .req-credit.is-empty { color: var(--text-3); }
 
+/* 命中率（缓存读取 / 输入 Token 的百分比）：只显示数字 + %，靠颜色分档。
+   <80 红、80–89 琥珀、90–100 绿 —— 三档用的是主题里既有的语义色，
+   深浅主题各有一套取值，不要在这里写死色号。 */
+.req-row .req-hit {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.req-row .req-hit.is-low { color: var(--danger); }
+.req-row .req-hit.is-mid { color: var(--warn); }
+.req-row .req-hit.is-high { color: var(--ok); }
+
 /* 用量两行：in / out / all 与 缓存读取 / 命中率。
    等宽 + tabular-nums，超出省略（完整读数在 title 里）。 */
 .req-row .req-usage {
@@ -406,7 +424,9 @@
      客户端不挤进第二行 —— 那一行右侧已经给了用时，96px 装不下「GitHub Copilot」 */
   .req-row .req-client { grid-row: 4; grid-column: 1 / 4; }
   .req-row .req-api-key { grid-row: 5; grid-column: 1 / 3; }
-  .req-row .req-speed { grid-row: 5; grid-column: 3 / 5; }
+  .req-row .req-speed { grid-row: 5; grid-column: 3 / 4; }
+  /* 命中率挤进第 5 行最后一格（原先是速度独占 3/5，让出一格给它） */
+  .req-row .req-hit { grid-row: 5; grid-column: 4 / 5; }
   .req-row .req-detail { grid-row: 4; grid-column: 4 / 5; justify-self: end; }
   /* 「-」占位不再独占一行：窄窗口下空行比省略号更难解释 */
   .req-row .req-error-cell { display: none; }

@@ -146,6 +146,8 @@
         // grid-template-columns 同步；数值右对齐，宽度只够放「0.06」这类读数。
         { key: 'credit', sel: '.req-credit', track: '72px' },
         { key: 'usage', sel: '.req-usage', track: 'minmax(0, 1.6fr)' },
+        // 命中率：只放「99.91%」这类读数，与 page-requests.css 的默认轨道同步
+        { key: 'hit', sel: '.req-hit', track: '76px' },
         { key: 'error', sel: '.req-error-cell', track: 'minmax(0, 1.2fr)' },
         { key: 'detail', sel: '.req-detail', track: '60px' },
       ],

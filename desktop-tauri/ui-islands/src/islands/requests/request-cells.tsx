@@ -111,11 +111,17 @@ function formatElapsed(ts: unknown): string {
   return t('{n}秒', { n: Math.max(1, Math.floor(elapsed / 1000)) })
 }
 
+/** 缓存命中率的数值（百分比）。分母为 0 时无意义，返回 null。 */
+function cacheRateValue(entry: RequestEntry): number | null {
+  const prompt = Number(entry.promptTokens) || 0
+  if (prompt <= 0) return null
+  return (Number(entry.cacheReadTokens) || 0) / prompt * 100
+}
+
 /** 缓存命中率：命中读取 / 输入，分母为 0 时无意义，给「-」 */
 function cacheRate(entry: RequestEntry): string {
-  const prompt = Number(entry.promptTokens) || 0
-  if (prompt <= 0) return '-'
-  return `${((Number(entry.cacheReadTokens) || 0) / prompt * 100).toFixed(2)}%`
+  const rate = cacheRateValue(entry)
+  return rate === null ? '-' : `${rate.toFixed(2)}%`
 }
 
 /**
@@ -428,6 +434,21 @@ export function RequestCell({ entry, column, namesHidden }: { entry: RequestEntr
         <span key={key} className={className} title={[line1, line2].join('\n')}>
           <span className='req-usage-line'>{line1}</span>
           <span className='req-usage-line sub'>{line2}</span>
+        </span>
+      )
+    }
+
+    case 'hit': {
+      // 进行中：用量还没记账，此刻没有命中率可算 —— 留空（与「用量」列同口径）
+      if (isRunning(entry)) return <span key={key} className={className} />
+      const rate = cacheRateValue(entry)
+      if (rate === null) return <span key={key} className={`req-none ${base} ta-${align}`}>-</span>
+      // 三档：<80 红、80–89 琥珀、≥90 绿。色值走 CSS 的语义变量（见 page-requests.css）
+      const tone = rate < 80 ? 'is-low' : rate < 90 ? 'is-mid' : 'is-high'
+      return (
+        <span key={key} className={`${className} ${tone}`}
+          title={t('缓存命中率 {rate}（缓存读取 / 输入 Token）', { rate: `${rate.toFixed(2)}%` })}>
+          {rate.toFixed(2)}%
         </span>
       )
     }
