@@ -700,6 +700,17 @@ export function supportsCreditDetail(account: AccountRecord | null | undefined):
 }
 
 /**
+ * 这一家能不能填邀请码。
+ *
+ * 与 `supportsCreditDetail` 同一写法：按提供商声明的能力位判断，不看
+ * provider 名字 —— 以后 WorkBuddy 接入时只需在 `providerFeatures` 里补
+ * `inviteCode: true`，界面无需改动。
+ */
+export function supportsInviteCode(account: AccountRecord | null | undefined): boolean {
+  return Boolean(providerFeatures(providerOf(account)).inviteCode)
+}
+
+/**
  * **账号最早一份「还能用」的积分包到期时刻**（毫秒）；读不到就是 `null`。
  *
  * 「还能用」= 未过期 + 剩余不为 0：已经作废的包不参与「快到期优先」，

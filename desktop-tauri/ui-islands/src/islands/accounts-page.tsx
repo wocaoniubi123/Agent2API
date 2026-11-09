@@ -9,7 +9,7 @@ import { Button, Checkbox, Input, ResponsiveSheet, SegmentedControl, Select, Sel
 import { TableFooter, useClientPaging } from './table-shell'
 import { shared, toast, type AccountRecord, type ColSettingsHandle } from './accounts-shared'
 import { panelRequest, readNumberSetting } from './panel-request'
-import { isDesktopAccount, isEnabled, providerOf, supportsUsage } from './accounts-domain'
+import { isDesktopAccount, isEnabled, providerOf, supportsInviteCode, supportsUsage } from './accounts-domain'
 import { ACCOUNT_COLUMNS, bindColumnGrips, columnWidths, tableMinWidth } from './accounts-columns'
 import {
   allAccounts, bump, clearFilter, clearLimits, clearSelection, ensureProxyPoolOptions,
@@ -26,6 +26,7 @@ import {
 import { bindQueueDrag, type QueueDrop } from './accounts-queue-drag'
 import { AccountsDialogs } from './accounts-dialogs'
 import { TodayGainDialog } from './accounts-today-gain'
+import { InviteCodeDialog } from './accounts-invite-dialog'
 import { HiddenAccountsNotice } from './accounts-hidden-notice'
 import { activeGroupSortRules, manualOrderBlockedMessage } from './accounts-group-settings'
 import { Badge, Spinner } from '@ui'
@@ -277,6 +278,8 @@ function AccountsPage() {
   const [filterOpen, setFilterOpen] = React.useState(false)
   /** 「今日积分获得」弹窗（汇总今天的发放：哪个号、通过什么、多少分） */
   const [todayGainOpen, setTodayGainOpen] = React.useState(false)
+  /** 「邀请码」弹窗：按平台分组，只列支持邀请码的账号 */
+  const [inviteOpen, setInviteOpen] = React.useState(false)
   /** 当前生效的筛选条数：给「筛选」按钮上的角标用，让用户知道列表被收窄了 */
   const activeFilterCount =
     (store.filter.provider !== 'all' ? 1 : 0)
@@ -527,11 +530,21 @@ function AccountsPage() {
               disabled={!all.some(supportsUsage)}
               title={t('今天的积分发放汇总：按账号、按获得途径、逐笔明细')}
               onClick={() => setTodayGainOpen(true)}>{t('今日积分')}</Button>
+            {/* 邀请码：按平台能力门控 —— 只有存在「支持邀请码」的账号时才出现，
+                所以没有 Loomy 账号的机器上不会看到这个按钮 */}
+            {all.some(supportsInviteCode)
+              ? (
+                <Button id='btn-invite-code' variant='outline'
+                  title={t('给支持邀请码的平台填码（目前只有 Loomy）')}
+                  onClick={() => setInviteOpen(true)}>{t('邀请码')}</Button>
+                )
+              : null}
             <UsageConcurrencyField />
           </div>
         </div>
 
         <TodayGainDialog open={todayGainOpen} onClose={() => setTodayGainOpen(false)} />
+        <InviteCodeDialog open={inviteOpen} onClose={() => setInviteOpen(false)} />
 
         {store.listError ? (
           <Alert variant='destructive' className='acct-load-error' role='alert'>

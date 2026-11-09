@@ -86,6 +86,7 @@ pub mod checkin_records;
 pub mod checkin_schedules;
 pub mod cline_headers;
 pub mod codearts_welfare;
+pub mod invite_code;
 pub mod compact_routes;
 pub mod client_identification;
 pub mod config_api;

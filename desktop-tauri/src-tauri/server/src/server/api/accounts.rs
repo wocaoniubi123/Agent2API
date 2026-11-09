@@ -468,6 +468,21 @@ pub async fn dispatch(
                 return super::zcode_claim::claim_plan(&state, &id, body).await;
             }
         }
+        if let Some(id) = rest.strip_suffix("/invite-code") {
+            let id = decode_segment(id);
+            if !id.is_empty() {
+                return match method.as_str() {
+                    "GET" => super::invite_code::status(&state, &id).await,
+                    _ => super::invite_code::bind(&state, &id, body).await,
+                };
+            }
+        }
+        if let Some(id) = rest.strip_suffix("/redeem-code") {
+            let id = decode_segment(id);
+            if !id.is_empty() {
+                return super::invite_code::redeem(&state, &id, body).await;
+            }
+        }
         if let Some(id) = rest.strip_suffix("/campaigns/redeem") {
             let id = decode_segment(id);
             if !id.is_empty() {

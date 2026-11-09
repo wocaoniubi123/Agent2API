@@ -87,6 +87,15 @@ export type ProviderFeatures = {
    */
   creditDetail?: boolean
   /**
+   * 这一家有没有「邀请码」概念（填码后上游给积分奖励）。
+   *
+   * 判据是**上游真有这个接口**，不是「有没有积分」：Loomy 走
+   * `POST /api/v1/points/activation`（插件侧 `invite.status` / `invite.bind`）；
+   * WorkBuddy 的邀请机制尚未接入，等接口逆清再加一行即可 —— 账号页那个
+   * 「邀请码」按钮和弹窗都按本字段门控，不认具体 provider 名。
+   */
+  inviteCode?: boolean
+  /**
    * `credits[]` 里带**逐份到期时刻**（`expireAt`），可以按「快到期优先」排序。
    *
    * 与 `creditDetail` 分开是因为真实分布是分裂的：有明细 ≠ 明细里有到期。
@@ -232,7 +241,7 @@ const PROVIDER_FEATURES: Record<string, ProviderFeatures> = {
   //   session 确实会失效，只是失效时刻不可知。
   // `creditDetail: true` —— 双账户各一行（永久积分 / 每日赠送积分），后者标 `daily`
   //   → 界面写「每日重置」而不是到期（读到 0 也不折进「已用完」，明天回满）。
-  loomy: { usage: true, creditDetail: true, edition: false, identifier: ['userId'], expiry: [''] },
+  loomy: { usage: true, creditDetail: true, inviteCode: true, edition: false, identifier: ['userId'], expiry: [''] },
   // KukuAI（百度文库库库 AI）。各位各有出处：
   // `usage: true` —— 余额/积分查询（GET /bizapi/gfpro/getgfvipremain 的
   //   totalPoint，见后端 providers::kuku::balance）。
@@ -504,8 +513,20 @@ function declaredLimiters(value: unknown): readonly LimiterRule[] | undefined {
  */
 export function providerFeatures(providerId: string | undefined): ProviderFeatures {
   if (!providerId) return GENERIC_FEATURES
+  const base = PROVIDER_FEATURES[providerId] || GENERIC_FEATURES
   const declared = declaredTable().get(providerId)
-  if (declared) return declared
-  return PROVIDER_FEATURES[providerId] || GENERIC_FEATURES
+  if (!declared) return base
+  /**
+   * 插件申报**整条优先**，但它只申报「账号接入相关」的字段（usage / identifier /
+   * expiry / credit_detail …）。纯界面判据 `inviteCode` 协议里根本没有，申报表
+   * 里也就没有它 —— 直接 `return declared` 会把本地表声明的那一位静默吃掉，
+   * 表现为「按钮怎么都不出现」（Loomy 的邀请码入口就这么消失过一次）。
+   *
+   * 这里只把 `inviteCode` 从本地表补回来，其余字段保持申报优先 —— 不合并别的，
+   * 避免改变既有 provider 的能力判定。
+   *
+   * 将来协议里加上 `invite_code` 之后，这里的补丁可以删掉。
+   */
+  return { ...declared, inviteCode: base.inviteCode }
 }
 
