@@ -27,6 +27,20 @@ export function byStatus<T>(rows: T[], filter: StatusFilter, doneOf: (row: T) =>
   return rows.filter(row => filter === 'done' ? doneOf(row) : !doneOf(row))
 }
 
+/**
+ * 未完成 / 还能做的排在最上面，已经办完的沉到最底下。
+ *
+ * 只换顺序、不换判据：`doneOf` 一律用各档位现成的那个谓词
+ * （`onboardingDone` / `growthDone`），口径不会和筛选器里的计数漂移。
+ * 没查询过的账号在谓词里算「未完成」，于是也排在上面 —— 正是想要的：
+ * 先看见「要做事的」。
+ *
+ * `Array.prototype.sort` 自 ES2019 起保证稳定，同组内保持原来的账号顺序。
+ */
+export function pendingFirst<T>(rows: T[], doneOf: (row: T) => boolean): T[] {
+  return [...rows].sort((a, b) => Number(doneOf(a)) - Number(doneOf(b)))
+}
+
 export function StatusBadge({ status }: { status: AccountCheckinStatus }): React.ReactElement {
   const variants = { ok: 'success', warn: 'warning', bad: 'destructive', mute: 'outline', brand: 'brand' } as const
   return <Badge variant={variants[checkinStatusTone(status)]} shape='tag'>{t(checkinStatusLabel(status))}</Badge>

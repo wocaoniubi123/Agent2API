@@ -16,7 +16,7 @@ import { PlansSection, type PlansCounts } from './checkin-plans-section'
 import { OfficeaceSubscriptionRow } from './checkin-officeace-row'
 import { ProviderRail, type ProviderOption } from './checkin-provider-rail'
 import { DailyAccountList } from './checkin-daily-panel'
-import { DetailLine, TaskTick, byStatus, filterOptions, type StatusFilter } from './checkin-shared'
+import { DetailLine, TaskTick, byStatus, filterOptions, pendingFirst, type StatusFilter } from './checkin-shared'
 import { claimOnboarding, claimOnboardingBatch, onboardingClaimable, onboardingOf, queryOnboarding } from './checkin-onboarding'
 import { onboardingSummary } from './checkin-onboarding-cache'
 import { t } from '../i18n'
@@ -461,9 +461,12 @@ export function CenterTab({ center }: { center: CheckinCenter }): React.ReactEle
   const onboardingDone = (row: OnboardingEntry) => onboardingSummary(onboardingOf(row.id)).claimed
   const onboardingGroups = groupByProvider(extras.onboarding)
   const onboardingDoneCount = extras.onboarding.filter(onboardingDone).length
-  const onboardingRows = byStatus(
-    providerId ? extras.onboarding.filter(row => (row.provider || '') === providerId) : extras.onboarding,
-    filter, onboardingDone,
+  const onboardingRows = pendingFirst(
+    byStatus(
+      providerId ? extras.onboarding.filter(row => (row.provider || '') === providerId) : extras.onboarding,
+      filter, onboardingDone,
+    ),
+    onboardingDone,
   )
   const onboardingBusy = store.onboardingBatch !== null || onboardingRows.some(row => {
     const cache = onboardingOf(row.id)
@@ -479,9 +482,12 @@ export function CenterTab({ center }: { center: CheckinCenter }): React.ReactEle
   }
   const growthGroups = groupByProvider(extras.growth)
   const growthDoneCount = extras.growth.filter(growthDone).length
-  const growthRows = byStatus(
-    providerId ? extras.growth.filter(row => (row.provider || '') === providerId) : extras.growth,
-    filter, growthDone,
+  const growthRows = pendingFirst(
+    byStatus(
+      providerId ? extras.growth.filter(row => (row.provider || '') === providerId) : extras.growth,
+      filter, growthDone,
+    ),
+    growthDone,
   )
   const growthBusy = store.growthBatch !== null || growthRows.some(row => {
     const cache = growthOf(row.id)
@@ -656,6 +662,16 @@ export function CenterTab({ center }: { center: CheckinCenter }): React.ReactEle
                   </Button>
                 </> : null}
                 {section === 'growth' ? <>
+                  {/* 纯查询：只打上游读任务树，不执行任何任务。
+                      上游把查询塞进了「一键完成」的前置步骤里，于是「只想看看有哪些
+                      号还能做」这个需求没有独立入口 —— 补一颗，与新手福利那颗同一形态。 */}
+                  <Button size="sm" variant="outline" disabled={growthBusy || growthRows.length === 0}
+                    title={t('只查询任务树（不执行任何任务），查完再决定跑不跑')}
+                    onClick={() => {
+                      for (const row of growthRows) void queryGrowth(row.id)
+                    }}>
+                    {t('全部查询')}
+                  </Button>
                   <Button size="sm" variant="outline" disabled={growthBusy || growthRows.length === 0}
                     title={t('接单 + 点亮 + 领奖（只处理已实测沉淀的任务）')}
                     onClick={() => void runGrowthBatch(growthRows.map(row => row.id), 'full')}>
