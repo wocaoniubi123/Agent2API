@@ -469,6 +469,10 @@ export type SharedWindow = {
     readonly currentPage?: string
   }
   wbConfirm?: { ask?: (options: ConfirmOptions) => Promise<boolean> }
+  /** 桌面壳（React 那棵树）暴露的接口：页面切换、主题、**播报**都走它 */
+  wbShell?: {
+    toast?: (message: string, kind?: 'err' | 'ok') => void
+  }
   wbProviders?: {
     labelOf?: (id: string) => string
     all?: () => Array<{ id?: string; label?: string }>
@@ -551,7 +555,23 @@ export function shared(): SharedWindow {
 
 /* ─── 小工具（跨文件共用的三件：播报 / 转义 / 时间）───── */
 
+/**
+ * 界面上弹一条提示。
+ *
+ * ── 为什么优先 wbShell 而不是 wbApp ────────────────────────────
+ * `wbShell.toast` 是桌面壳（React 那棵树）的 Toaster，能真正渲染出来。
+ * `wbApp.toast` 是**旧非 React 层**的实现，往一个已经被 React 重写掉的容器里插：
+ * 它是个函数、调用也不报错，但界面上什么都不会发生（静默失效）。
+ *
+ * 这个坑让「填写邀请码 / 兑换码」的成功反馈一直不出现 —— 代码写了 toast，
+ * 界面毫无反应，排查时一度以为是请求没发出去。
+ */
 export function toast(message: string, kind?: 'err' | 'ok'): void {
+  const shell = shared().wbShell?.toast
+  if (typeof shell === 'function') {
+    shell(message, kind)
+    return
+  }
   shared().wbApp?.toast?.(message, kind)
 }
 

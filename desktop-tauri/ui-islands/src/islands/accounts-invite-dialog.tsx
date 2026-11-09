@@ -33,7 +33,7 @@ import { t } from '../i18n'
 import { panelRequest } from './panel-request'
 import { allAccounts } from './accounts-store'
 import { displayNameOf, providerOf, supportsInviteCode } from './accounts-domain'
-import { shared } from './accounts-shared'
+import { shared, toast } from './accounts-shared'
 
 /** 这个号**自己产出的**一个邀请码 */
 type OwnCode = {
@@ -166,7 +166,13 @@ export function InviteCodeDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  const submitOne = React.useCallback(async (id: string, code: string) => {
+  /**
+   * 给单个号提交邀请码。
+   *
+   * `quiet`：批量调过来时置 true —— 一次打十个号就弹十条 toast 会糊满屏幕，
+   * 批量自己用顶部那行 `notice` 汇总（「成功 N 个，失败 M 个」）。
+   */
+  const submitOne = React.useCallback(async (id: string, code: string, quiet = false) => {
     const trimmed = code.trim()
     if (!trimmed) return false
     setRows(current => current.map(item => (item.id === id ? { ...item, busy: true, error: '' } : item)))
@@ -176,17 +182,33 @@ export function InviteCodeDialog({
       setRows(current => current.map(item => (item.id === id
         ? { ...item, busy: false, state: 'ready', activated: status.activated, code: status.code || trimmed, ownCodes: status.ownCodes.length ? status.ownCodes : item.ownCodes }
         : item)))
+      if (!quiet) {
+        const who = rows.find(item => item.id === id)?.name || ''
+        toast(t('{account} 已填邀请码 {code}', { account: who, code: trimmed }), 'ok')
+      }
       return true
     } catch (error) {
       const message = String((error as Error)?.message || error)
       setRows(current => current.map(item => (item.id === id ? { ...item, busy: false, error: message } : item)))
+      if (!quiet) toast(t('填写失败：{message}', { message }), 'err')
       return false
     }
-  }, [])
+  }, [rows])
 
+  /**
+   * 给单个号兑换兑换码。
+   *
+   * 兑换的响应结构与激活接口不同族（上游只回兑换结果），所以这里**只更新
+   * 能确定的部分**：`activated` / `invitationCodes` 若上游没给就保留原值，
+   * 避免把「已经填过的码」显示成「未填」。
+   *
+   * 成功/失败都会弹 toast —— 兑换是「一次性、不可撤回」的动作，用户必须
+   * 立刻知道成没成，不能只靠行内那行小字。
+   */
   const submitRedeem = React.useCallback(async (id: string, code: string) => {
     const trimmed = code.trim()
     if (!trimmed) return false
+    const who = rows.find(item => item.id === id)?.name || ''
     setRows(current => current.map(item => (item.id === id ? { ...item, busy: true, error: '' } : item)))
     try {
       const payload = await panelRequest('POST', `/api/accounts/${encodeURIComponent(id)}/redeem-code`, { code: trimmed })
@@ -201,13 +223,22 @@ export function InviteCodeDialog({
             ownCodes: status.ownCodes.length ? status.ownCodes : item.ownCodes,
           }
         : item)))
+      // 上游若回了积分/奖励数额就带上，没给就只说「成功」
+      const data = (payload && typeof payload === 'object' ? (payload as Record<string, unknown>).data : null) as Record<string, unknown> | null
+      const reward = Number(
+        (data?.reward ?? data?.points ?? data?.amount ?? data?.grantedPoints ?? 0) as number,
+      ) || 0
+      toast(reward > 0
+        ? t('{account} 兑换成功，获得 {n} 积分', { account: who, n: reward })
+        : t('{account} 兑换成功', { account: who }), 'ok')
       return true
     } catch (error) {
       const message = String((error as Error)?.message || error)
       setRows(current => current.map(item => (item.id === id ? { ...item, busy: false, error: message } : item)))
+      toast(t('兑换失败：{message}', { message }), 'err')
       return false
     }
-  }, [])
+  }, [rows])
 
   /**
    * 平台级批量：只打**这个平台**里还没填过的号。
@@ -234,7 +265,7 @@ export function InviteCodeDialog({
     let failed = 0
     try {
       for (const id of targets) {
-        const done = await submitOne(id, code)
+        const done = await submitOne(id, code, true)
         if (done) ok += 1
         else failed += 1
       }
@@ -360,6 +391,20 @@ export function InviteCodeDialog({
                                     onClick={() => toggleInline(row.id, 'redeem')}>{t('兑换')}</Button>
                                 </span>
                               </div>
+
+                              {/*
+                                提交失败：**独立一行**，不挤在状态格里。
+                                原先只在 `state === 'error'` 时显示 row.error，而填写/兑换
+                                失败时 state 仍是 'ready'（账号本身是好的，只是这次动作失败），
+                                于是错误被静默吞掉 —— 上游 0.2 秒就回了「请求参数错误」，
+                                界面上却什么都没有。
+                              */}
+                              {row.error ? (
+                                <div className='px-3 pb-1 pl-12 text-[11.5px] leading-relaxed text-destructive'
+                                  title={row.error}>
+                                  {row.error}
+                                </div>
+                              ) : null}
 
                               {/* 行内：填写邀请码 */}
                               {mode === 'fill' ? (
