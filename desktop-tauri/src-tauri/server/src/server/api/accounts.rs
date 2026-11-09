@@ -417,6 +417,21 @@ pub async fn dispatch(
         _ => {}
     }
 
+    // ②·5 邀请码：GET 查状态、POST 绑码 —— **同一个路径两种方法**。
+    //
+    // 必须放在下面那个 `if method == Method::POST` 块**之前**：那一块只处理 POST，
+    // 把这条塞进去会让 `GET /api/accounts/{id}/invite-code` 永远落空（踩过一次，
+    // 表现为界面一直显示 Not found）。
+    if let Some(id) = rest.strip_suffix("/invite-code") {
+        let id = decode_segment(id);
+        if !id.is_empty() {
+            return match method.as_str() {
+                "GET" => super::invite_code::status(&state, &id).await,
+                _ => super::invite_code::bind(&state, &id, body).await,
+            };
+        }
+    }
+
     // ③ POST + /move 结尾；POST + /rate-limits/clear 结尾
     if method == Method::POST {
         if let Some(id) = rest.strip_suffix("/move") {
@@ -466,15 +481,6 @@ pub async fn dispatch(
             let id = decode_segment(id);
             if !id.is_empty() {
                 return super::zcode_claim::claim_plan(&state, &id, body).await;
-            }
-        }
-        if let Some(id) = rest.strip_suffix("/invite-code") {
-            let id = decode_segment(id);
-            if !id.is_empty() {
-                return match method.as_str() {
-                    "GET" => super::invite_code::status(&state, &id).await,
-                    _ => super::invite_code::bind(&state, &id, body).await,
-                };
             }
         }
         if let Some(id) = rest.strip_suffix("/redeem-code") {
