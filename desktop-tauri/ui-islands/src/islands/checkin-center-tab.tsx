@@ -664,7 +664,19 @@ export function CenterTab({ center }: { center: CheckinCenter }): React.ReactEle
   // （行级的一键领取 / 一键完成由 OnboardingRow / GrowthRow 自己提供，
   //  这里解决的是「几十个账号懒得一个个点」。）
   const onboardingTargets = extras.onboarding.filter(row => !onboardingDone(row))
-  const growthTargets = extras.growth.filter(row => !growthDone(row))
+  /**
+   * 成长任务「一键完成」的目标集：**只认已经查过的号**。
+   *
+   * 不能直接用 `!growthDone(row)`：`growthDone` 把 `status !== 'loaded'` 当作「未完成」
+   * （这个口径对筛选/计数是对的 —— 没查过当然不算完成），于是没点「全部查询」之前
+   * 全部账号都会被算成可完成，按钮一上来就可点，点下去等于盲打一轮。
+   * 这里额外要求 `status === 'loaded'`：未查 / 查询中 / 查询失败都不算目标。
+   */
+  const growthTargets = extras.growth.filter(row => {
+    const cache = growthOf(row.id)
+    if (cache.status !== 'loaded') return false
+    return !growthDone(row)
+  })
   const [claimingAll, setClaimingAll] = React.useState(false)
   const [runningAllGrowth, setRunningAllGrowth] = React.useState(false)
 
@@ -853,7 +865,7 @@ export function CenterTab({ center }: { center: CheckinCenter }): React.ReactEle
                   disabled={runningAllGrowth || growthTargets.length === 0}
                   title={growthTargets.length > 0
                     ? t('只对还有可完成任务的 {n} 个账号执行（接单 + 点亮 + 领奖；已完成 / 已领取的跳过）', { n: growthTargets.length })
-                    : t('当前没有可完成的账号')}
+                    : t('先点「全部查询」，查出可完成任务后才可用')}
                   onClick={() => void runAllGrowthTasks()}
                 >
                   {runningAllGrowth

@@ -135,7 +135,10 @@ function install() {
     status(next, text = '') { status = next; title = text; publish() },
     theme(next) { mode = next; publish() },
     closeNavigation() { window.dispatchEvent(new Event('wb:navigation-close')) },
-    toast(message, kind = 'ok') { toastManager.add({ id: 'desktop-feedback', title: message, type: kind === 'err' ? 'error' : kind === 'warn' ? 'warning' : 'success', timeout: 3500 }) },
+    // `timeout` 是**全局**的：所有页面共用这一个 toastManager，改这里等于改全项目。
+    // 1 秒是「够看清一行字、又不耽误连点」的折中 —— 原先 3.5 秒，连续点几次
+    // 按钮就会觉得每次都在等它自己消失。
+    toast(message, kind = 'ok') { toastManager.add({ id: 'desktop-feedback', title: message, type: kind === 'err' ? 'error' : kind === 'warn' ? 'warning' : 'success', timeout: 1000 }) },
   }
   flushSync(() => createRoot(container).render(<Frame />))
   const feedback = document.createElement('div')

@@ -383,7 +383,14 @@ export function InviteCodeDialog({
                                 </span>
 
                                 <span className='flex shrink-0 items-center gap-1'>
-                                  <Button size='sm' variant='ghost' disabled={row.busy}
+                                  {/*
+                                    已填过的号把「填写」禁掉：上游对已激活的号**不校验新码**，
+                                    再提交什么都会回 `alreadyActivated: true`（不是成功、也不是失败），
+                                    让人以为"随便填都行"。禁掉比事后解释清楚。
+                                  */}
+                                  <Button size='sm' variant='ghost'
+                                    disabled={row.busy || (row.state === 'ready' && row.activated)}
+                                    title={row.state === 'ready' && row.activated ? t('这个号已经填过邀请码了') : undefined}
                                     onClick={() => toggleInline(row.id, 'fill')}>{t('填写')}</Button>
                                   <Button size='sm' variant='ghost' disabled={row.busy}
                                     onClick={() => toggleInline(row.id, 'view')}>{t('查看')}</Button>
