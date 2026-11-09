@@ -17,6 +17,65 @@
 
 **编译、打包、出包一律在 `ziyong` 上做，不要为触发构建新建任何临时分支。**
 
+### 本地编译出安装包（首选）
+
+本机有完整的便携工具链 `G:\ZCode\Agent2API-tool`（便携 node / npm / rust + `env.ps1`），
+**出包默认走本地编译**，不要把「重建产物」或「出安装包」甩给 CI —— 云端那条路只为本地编不了的情况留。
+
+```powershell
+# ① 每个新 shell 都要先 dot-source（前面那个点不能省，否则变量出不去、rustup 会报找不到 home）
+$root = 'G:\ZCode\Agent2API-tool'
+. "$root\env.ps1"
+
+# ② 前端产物：先 i18n 再 ui-islands（顺序不能反 —— ui-islands 编译时要读 i18n 产物）
+Set-Location 'G:\ZCode\Agent2API\desktop-tauri\i18n'
+npm run build
+
+Set-Location 'G:\ZCode\Agent2API\desktop-tauri\ui-islands'
+npm run build     # = tsc --noEmit && vite build && vite build --config vite.login.config.ts
+
+# 手机端只在动了手机端代码时才编（跳过可省几分钟）
+# Set-Location 'G:\ZCode\Agent2API\desktop-tauri\mobile'; npm run build
+
+# ③ 出 Windows 安装包
+Set-Location 'G:\ZCode\Agent2API\desktop-tauri'
+tauri-build --bundles nsis
+```
+
+- **`tauri.conf.json` 里没有 `beforeBuildCommand`** —— 第 ② 步不会自动发生，漏了就等于把旧前端打进安装包。
+- 产物：主程序 `G:\ZCode\Agent2API-tool\target\release\agent2api.exe`；
+  安装包 `G:\ZCode\Agent2API-tool\target\release\bundle\nsis\Agent2API_<版本>_x64-setup.exe`。
+- 耗时基准（2026-11-10，12 核 / 16 GB，增量编译）：**约 16 分钟**。上游引入 `wasmtime 36` 后
+  exe 由 26.9 MB 涨到 33.1 MB，第一次编这坨要多花几分钟。
+- `tauri-build` 是 `env.ps1` 里封装的函数：跑完自动把被 tauri 改写的 `src-tauri/Cargo.toml`
+  行尾还原，并报告仓库里是否还有别的改动。
+
+### 出包后：把安装包放到桌面
+
+```powershell
+$desktop = [Environment]::GetFolderPath('Desktop')     # 本机是 E:\desk-ai（桌面被重定向过）
+$setup = Get-ChildItem 'G:\ZCode\Agent2API-tool\target\release\bundle\nsis\Agent2API_*-setup.exe' |
+         Sort-Object LastWriteTime -Descending | Select-Object -First 1
+Copy-Item $setup.FullName -Destination $desktop -Force
+```
+
+**桌面路径不要写死 `C:\Users\<用户>\Desktop`** —— 本机桌面重定向在 `E:\desk-ai`
+（`HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders` 的 `Desktop` 也是这个值；
+`...\Explorer\Shell Folders` 那个键还留着旧的 `C:\Users\Administrator\Desktop`，**别信它**）。
+每次放产物前用 `[Environment]::GetFolderPath('Desktop')` 现取。
+
+### 装包前必查三条
+
+1. **先退出网关**：`agent2api.exe` 正监听 3065，占着文件就装不上。
+2. **安装目录保持 `E:\1反代项目\Agent2API`**：数据目录跟随 exe（`{exe}/data`）。装进
+   `Program Files` 时普通用户写不进去，会按设计回落到 `C:\Users\<用户>\.agent2api`，
+   表现就是「账号和配置全没了」。`src-tauri/nsis-template.nsi` 的 `ReadPreviousInstallDir`
+   补丁正是为读回上次安装位置而留，装的时候看一眼路径。
+3. **首次启动会跑 schema 迁移**（当前 27 → 29）：迁移是加料式的、不重建表；库大的话先点
+   「压缩数据库」再启动，扫描更快。
+
+### 云端出包（仅当本地编译不可用时）
+
 ```bash
 # ① 改代码 → 提交 → push
 git push origin ziyong
