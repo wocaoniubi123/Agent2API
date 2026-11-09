@@ -1935,13 +1935,6 @@ pub fn set_routing(patch: RoutingPatch) -> bool {
     })
 }
 
-// ─── 调试模式（debugMode）────────────────────────────────────
-
-/// 写入调试模式开关。
-///
-/// 与 `set_retry` 同一模式：内存快照与 raw 底稿一起改 —— 前者让下一个请求
-/// 立刻用新值（转发层逐请求读快照），后者保证写盘时不吃掉 config.json 里的
-/// 其它字段。返回是否落盘成功（失败时内存仍已更新，见调用点）。
 /// 每日全量强刷的开关与时刻（时刻原样返回 `HH:MM`，解析在取用处）。
 pub fn credential_daily_sweep() -> (bool, String) {
     if let Ok(guard) = CONFIG.read() {
@@ -2001,6 +1994,13 @@ pub fn set_credential_daily_sweep(enabled: bool, at: &str) -> bool {
     })
 }
 
+// ─── 调试模式（debugMode）────────────────────────────────────
+
+/// 写入调试模式开关。
+///
+/// 与 `set_retry` 同一模式：内存快照与 raw 底稿一起改 —— 前者让下一个请求
+/// 立刻用新值（转发层逐请求读快照），后者保证写盘时不吃掉 config.json 里的
+/// 其它字段。返回是否落盘成功（失败时内存仍已更新，见调用点）。
 pub fn set_debug_mode(enabled: bool) -> bool {
     update(|config| {
         config
