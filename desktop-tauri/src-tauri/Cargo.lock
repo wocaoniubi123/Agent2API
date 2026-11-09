@@ -55,7 +55,7 @@ dependencies = [
 [[package]]
 name = "agent2api-provider-protocol"
 version = "0.2.1"
-source = "git+https://github.com/ProvidersPlugin/Agent2Providers?tag=v3.4.0#198b5051928c33426ff4fd63d486c84f9c5394af"
+source = "git+https://github.com/wocaoniubi123/Agent2Providers?tag=ziyong-3.4.4#cbb8a3e438a94981d72588e5d993f486a5460110"
 dependencies = [
  "base64 0.22.1",
  "serde",
