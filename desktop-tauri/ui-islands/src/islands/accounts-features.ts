@@ -466,6 +466,7 @@ function normalizeDeclared(raw: Record<string, unknown>): ProviderFeatures {
     usageDetail: raw.usage_detail === true,
     creditDetail: raw.credit_detail === true,
     creditExpiry: raw.credit_expiry === true,
+    inviteCode: raw.invite_code === true,
     concurrencyDefault: Number(raw.concurrency_default) > 0 ? Number(raw.concurrency_default) : undefined,
     defaultLimiters: declaredLimiters(raw.default_limiters),
   }
@@ -513,20 +514,8 @@ function declaredLimiters(value: unknown): readonly LimiterRule[] | undefined {
  */
 export function providerFeatures(providerId: string | undefined): ProviderFeatures {
   if (!providerId) return GENERIC_FEATURES
-  const base = PROVIDER_FEATURES[providerId] || GENERIC_FEATURES
   const declared = declaredTable().get(providerId)
-  if (!declared) return base
-  /**
-   * 插件申报**整条优先**，但它只申报「账号接入相关」的字段（usage / identifier /
-   * expiry / credit_detail …）。纯界面判据 `inviteCode` 协议里根本没有，申报表
-   * 里也就没有它 —— 直接 `return declared` 会把本地表声明的那一位静默吃掉，
-   * 表现为「按钮怎么都不出现」（Loomy 的邀请码入口就这么消失过一次）。
-   *
-   * 这里只把 `inviteCode` 从本地表补回来，其余字段保持申报优先 —— 不合并别的，
-   * 避免改变既有 provider 的能力判定。
-   *
-   * 将来协议里加上 `invite_code` 之后，这里的补丁可以删掉。
-   */
-  return { ...declared, inviteCode: base.inviteCode }
+  if (declared) return declared
+  return PROVIDER_FEATURES[providerId] || GENERIC_FEATURES
 }
 
