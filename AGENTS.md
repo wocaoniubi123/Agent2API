@@ -74,6 +74,66 @@ Copy-Item $setup.FullName -Destination $desktop -Force
 3. **首次启动会跑 schema 迁移**（当前 27 → 29）：迁移是加料式的、不重建表；库大的话先点
    「压缩数据库」再启动，扫描更快。
 
+### 插件本地编译（`Agent2Providers`）
+
+提供商插件**也走本地编译**，不要装官方发布仓库的预编译包 —— 那是别人的构建，会丢掉本 fork 的
+`invite_code` 能力位（账号页那颗「邀请码」按钮就靠它）。插件仓库在 `G:\ZCode\Agent2Providers`（分支 `main`）。
+
+依赖只有三样，本机全部就绪，**不需要再装 VS Build Tools**：
+
+| 依赖 | 本机现状 |
+|---|---|
+| Rust ≥ 1.88（`Cargo.toml` 的 `rust-version`） | `env.ps1` 的便携 `stable-x86_64-pc-windows-msvc`（实测 rustc 1.99.1） |
+| MSVC 链接器 | VS 2022 Community 自带 `VC\Tools\MSVC\14.44.35207`（就是 v143），对应 `x86_64-pc-windows-msvc` |
+| Node（只为跑 `scripts/pack.mjs`） | 便携 node（实测 v26.13.0） |
+
+**不需要 `npm install`**：`pack.mjs` 自实现 zip 写入（store 模式 + 手写 CRC32），仓库没有 node_modules；
+`ui/checkin/**` 是纯静态文件，没有前端构建步骤。`rusqlite` 走 `bundled`，所以要 C 编译器（就是上面那个 MSVC）。
+
+```powershell
+$root = 'G:\ZCode\Agent2API-tool'
+. "$root\env.ps1"                     # 每个新 shell 都要，别省那个点
+
+Set-Location 'G:\ZCode\Agent2Providers'
+node scripts/pack.mjs                 # = cargo build --release -p agent2api-providers + 打 zip
+
+# 想自己控 cargo 参数就分两步：
+# cargo build --release -p agent2api-providers
+# node scripts/pack.mjs --skip-build
+```
+
+- 产物：`G:\ZCode\Agent2Providers\dist\agent2api-providers-<版本>-<三元组>.zip`（约 16 MB，47 项）
+- **二进制不在仓库目录里**：`env.ps1` 把 `CARGO_TARGET_DIR` 钉到了 `G:\ZCode\Agent2API-tool\target`，
+  所以 exe 在 `G:\ZCode\Agent2API-tool\target\release\agent2api-providers.exe`。
+  `pack.mjs` 读这个变量、自动对齐 ✅；但 `verify.mjs` 的默认路径是写死的 `<仓库>/target/release/`，
+  本地跑必须显式给 `--exe`：
+  `node scripts/verify.mjs --exe G:\ZCode\Agent2API-tool\target\release\agent2api-providers.exe`
+- 耗时基准（2026-11-10，12 核 / 16 GB）：`cargo clean -p agent2api-providers --release` 之后
+  重编一个 crate + LTO = **4 分 05 秒**；完整冷编**约 6 分钟**。源码没变时 `cargo build` 只花 0.7 秒
+  （缓存命中），**那不算验证编译**，要真编就先 `clean -p`。
+- **每次编出来的 zip 哈希都不一样**：PE 头 `TimeDateStamp` 写的是编译时刻，本项目不是可复现构建，
+  哈希不同不代表产物有问题。
+- release profile 很重（`lto = true` / `codegen-units = 1` / `opt-level = "s"` / `strip = true`），
+  要限流就给 `$env:CARGO_BUILD_JOBS` 一个小于核数的值。
+
+改版本号必须**两处一起改**：`Cargo.toml` 的 `[workspace.package] version` 和 `pack.json` 的 `version`；
+改完 `Cargo.lock` 会跟着变（`cargo build` 自动写回）。
+
+出包后同样放桌面，路径现取别写死：
+
+```powershell
+$desktop = [Environment]::GetFolderPath('Desktop')     # 本机是 E:\desk-ai
+Copy-Item 'G:\ZCode\Agent2Providers\dist\agent2api-providers-*-x86_64-pc-windows-msvc.zip' `
+          -Destination $desktop -Force
+```
+
+安装：网关面板 → 插件 →「提供商增强」卡片 → **从文件安装** → 选这个 zip。覆盖安装会重启插件进程，
+正在跑的调用会短暂中断。自编包显示「未签名」（`signed: false`）是正常现象；要签名走
+`node scripts/sign.mjs keygen` + `sign --zip`，私钥默认落 `~/.agent2api/plugin-signing-key.json`，**绝不进仓库**。
+
+插件仓库 push **不触发任何构建**（`build.yml` 只认 `v*` tag，且只往构建仓库派发），所以改完想推就推；
+但按全局规矩，push 前仍要先问。
+
 ### 云端出包（仅当本地编译不可用时）
 
 ```bash
