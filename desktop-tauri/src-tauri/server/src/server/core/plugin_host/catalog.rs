@@ -157,17 +157,6 @@ pub async fn refresh(manual: bool) -> Result<Value, String> {
     }
 }
 
-/// 自用 fork 的发布仓库覆盖（2026-11-15）。
-///
-/// 插件索引在 `Agent2plugin/Agent2plugin`（别人的仓库），改不了它里面的
-/// `source.repo`，所以在这里按插件 id 覆盖「去哪个仓库找 Release」。
-/// 不在表里的插件仍走索引给的值 —— 只有 `agent2api-providers` 被改指到
-/// 自己的仓库。
-///
-/// tag / 资产名仍沿用索引里的模板（`v{version}` + `{id}-{version}-{target}.zip`），
-/// 与 `Agent2Providers/scripts/pack.mjs` 的产物命名一致，不需要额外配置。
-const CUSTOM_REPOS: &[(&str, &str)] = &[("agent2api-providers", "wocaoniubi123/Agent2Providers")];
-
 async fn fetch_catalog(channels: crate::server::config::UpdateChannels) -> Result<Value, UpdateError> {
     let entries = update::read_index_result().await?;
     let packs = super::list_packs();
@@ -176,7 +165,7 @@ async fn fetch_catalog(channels: crate::server::config::UpdateChannels) -> Resul
     let mut plugins = Vec::new();
     for entry in entries {
         let detail = update::read_detail(&entry.manifest).await;
-        let repo: &str = match CUSTOM_REPOS
+        let repo: &str = match update::CUSTOM_REPOS
             .iter()
             .find(|(id, _)| *id == entry.id)
             .map(|(_, repo)| *repo)
@@ -207,7 +196,10 @@ async fn fetch_catalog(channels: crate::server::config::UpdateChannels) -> Resul
             "repository": repo,
             "homepage": detail.as_ref().map(|detail| &detail.homepage),
             "protocol": detail.as_ref().map(|detail| detail.protocol), "icon": icon,
-            "requireSigned": entry.require_signed || detail.as_ref().is_some_and(|detail| detail.require_signed),
+            // 自建仓库的插件豁免签名校验（规则与 `update::is_custom_repo` 同一份）
+            "requireSigned": !update::is_custom_repo(&entry.id)
+                && (entry.require_signed
+                    || detail.as_ref().is_some_and(|detail| detail.require_signed)),
             "version": Value::Null, "page": Value::Null, "notes": "", "prerelease": false,
             "platforms": [], "error": false, "reason": Value::Null,
         });

@@ -158,7 +158,10 @@ pub fn start_cached(
         url: platform["url"].as_str().unwrap_or("").to_string(),
         size: platform["size"].as_u64().unwrap_or(0),
         page: String::new(),
-        require_signed: automatic || platform["requireSigned"] == true,
+        // 自建仓库的插件豁免「自动更新必须签名」这条（见 `update::CUSTOM_REPOS`）：
+        // 自编包没有 ed25519 私钥；不豁免的话后台自动更新会在下载完成后验签失败。
+        require_signed: platform["requireSigned"] == true
+            || (automatic && !update::is_custom_repo(id)),
     };
     let policy = if automatic {
         InstallPolicy::Automatic(super::settings::current().channels())

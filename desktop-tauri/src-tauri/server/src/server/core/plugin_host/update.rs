@@ -12,6 +12,25 @@ use crate::server::core::update::{compare_versions, is_prerelease_version, sourc
 
 pub const INDEX_REPO: &str = "Agent2plugin/Agent2plugin";
 pub const FALLBACK_REPO: &str = "Agent2Builder/agent2api-providers-releases";
+
+/// 自用 fork 的发布仓库覆盖（2026-11-15）。
+///
+/// 插件索引在 `Agent2plugin/Agent2plugin`（别人的仓库），改不了它里面的
+/// `source.repo`，所以按插件 id 覆盖「去哪个仓库找 Release」。不在表里的插件
+/// 仍走索引给的值。
+///
+/// **命中的插件同时豁免签名校验**：索引在非官方仓库里，`response.official` 恒为
+/// false，不豁免的话 `require_signed` 会算成 true，而自编包没有 ed25519 私钥，
+/// 在线更新会在下载完成后卡在验签（2026-11-15 实测：下载 100% 后报
+/// 「加速下载的插件未通过可信签名校验」，错误又被后续候选的超时覆盖成
+/// 「连接 GitHub 源超时」）。
+pub const CUSTOM_REPOS: &[(&str, &str)] = &[("agent2api-providers", "wocaoniubi123/Agent2Providers")];
+
+/// 这个插件 id 是不是走自建仓库（命中即豁免签名校验）。
+pub fn is_custom_repo(id: &str) -> bool {
+    CUSTOM_REPOS.iter().any(|(custom, _)| *custom == id)
+}
+
 const GITHUB_API: &str = "https://api.github.com";
 const QUERY_TIMEOUT_MS: u64 = 30_000;
 
@@ -343,8 +362,10 @@ pub(super) async fn release_for_channels(
         let Some(mut assets) = pick_release_assets(release, id, detail) else {
             continue;
         };
-        assets.require_signed =
-            !response.official || detail.is_some_and(|detail| detail.require_signed);
+        // 自建仓库的插件豁免签名校验（见 [`CUSTOM_REPOS`] 的说明）：
+        // 索引在非官方仓库里，`official` 恒 false，不豁免就会要求 ed25519 签名。
+        assets.require_signed = !is_custom_repo(id)
+            && (!response.official || detail.is_some_and(|detail| detail.require_signed));
         if !channels.accepts(assets.prerelease) {
             continue;
         }
@@ -467,7 +488,11 @@ pub async fn download(
         candidate.observe("ok", started.elapsed().as_millis() as u64, false);
         match read_download(response, asset, &mut progress).await {
             Ok(buffer) => {
-                if asset.require_signed || candidate.source == source::Source::Mirror {
+                // 自建仓库的包豁免验签（**含走镜像源的情况**）：自编包没有 ed25519
+                // 私钥，而下面这段对镜像源是无条件 `prepare(..., true)` 的，光靠
+                // `asset.require_signed = false` 绕不过去（2026-11-15 实测）��
+                let exempt = pack_id.as_deref().is_some_and(is_custom_repo);
+                if !exempt && (asset.require_signed || candidate.source == source::Source::Mirror) {
                     let verify = buffer.clone();
                     let id = pack_id.clone();
                     let version = asset.version.clone();
