@@ -77,7 +77,10 @@ Copy-Item $setup.FullName -Destination $desktop -Force
 ### 插件本地编译（`Agent2Providers`）
 
 提供商插件**也走本地编译**，不要装官方发布仓库的预编译包 —— 那是别人的构建，会丢掉本 fork 的
-`invite_code` 能力位（账号页那颗「邀请码」按钮就靠它）。插件仓库在 `G:\ZCode\Agent2Providers`（分支 `main`）。
+`invite_code` 能力位（账号页那颗「邀请码」按钮就靠它）。
+
+插件仓库在 `G:\ZCode\Agent2Providers`，**固定用 `ziyong` 分支**：编译、提交、发版全在它上面做；
+`main` 只当与上游对齐的中转站（`upstream/main` → `main` → 合进 `ziyong`），不在 `main` 上直接改东西。
 
 依赖只有三样，本机全部就绪，**不需要再装 VS Build Tools**：
 
@@ -95,6 +98,7 @@ $root = 'G:\ZCode\Agent2API-tool'
 . "$root\env.ps1"                     # 每个新 shell 都要，别省那个点
 
 Set-Location 'G:\ZCode\Agent2Providers'
+git checkout ziyong                   # 固定用 ziyong 分支（编译、提交、发版都在这上面）
 node scripts/pack.mjs                 # = cargo build --release -p agent2api-providers + 打 zip
 
 # 想自己控 cargo 参数就分两步：
