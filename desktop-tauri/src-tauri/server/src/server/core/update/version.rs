@@ -16,21 +16,20 @@ use serde_json::Value;
 
 use crate::server::config::UpdateChannels;
 
-/// 默认仓库：安装包实际发布的地方（独立构建账号下的仓库）。
+/// 默认仓库：安装包实际发布的地方。
 ///
-/// ── 为什么不是主仓库 ────────────────────────────────────────
-/// 构建已搬到专用账号（见 `Agent2Builder/agent2api-releases` 的
-/// `release.yml`）：七个平台 job 跑一次是重负载，留在主仓库做 tag 触发容易
-/// 被判定为 Actions 滥用。因此**主仓库不再发带安装包的 Release** —— 这个
-/// 常量若仍指向主仓库，更新检查会永远「已是最新」（不报错，只是静默失效）。
+/// ── 自用 fork 的取值（2026-11-15）───────────────────────────
+/// 上游这里是 `Agent2Builder/agent2api-releases`（专用构建账号）。本 fork
+/// 改成自己的仓库：安装包由本地 `tauri-build` 产出、再用 `gh release create`
+/// 上传，不再依赖上游那个构建仓库。
 ///
-/// ── 这个值是可以被远程改掉的 ────────────────────────────────
-/// 它只是**兜底**。正常情况下实际用的是索引里的 `app.repo`
-/// （见 `core::update::index`）：构建仓库换了，改索引文件即可，不必发版。
-/// 这里保留一个可用值，是为了「索引读不到也还能更新」。
+/// ── 这个值只是兜底 ──────────────────────────────────────────
+/// 正常情况下实际用的是索引里的 `app.repo`（见 `core::update::index`）。本 fork
+/// 在 `index::parse` 里把那个字段覆盖成同一个仓库，所以「索引读不到」与
+/// 「读到索引」两条路都指向这里。
 ///
 /// `WORKBUDDY_UPDATE_REPO` 环境变量仍可覆盖（最高优先级，且不读索引）。
-pub const DEFAULT_REPO: &str = "Agent2Builder/agent2api-releases";
+pub const DEFAULT_REPO: &str = "wocaoniubi123/Agent2API";
 
 /// 项目源码仓库（`owner/repo`）。
 ///

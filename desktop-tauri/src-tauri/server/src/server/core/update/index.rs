@@ -8,6 +8,21 @@ use super::{client, version::{compare_versions, DEFAULT_REPO}};
 
 const TRUSTED_KEY: &str = "updateIndexTrustedApp";
 
+/// 自用 fork 的应用更新仓库（2026-11-15）。
+///
+/// ── 为什么覆盖而不是改索引 ──────────────────────────────────
+/// 更新仓库的正规来源是索引仓库 `Agent2plugin/Agent2plugin` 的 `app.json`
+/// （`app.repo`），那是别人的仓库、改不了。所以在这里把这个字段固定成自己的
+/// 仓库；`forceUpdate`（强制更新策略）仍原样采用索引里的内容，只换「去哪下载」。
+///
+/// ── 这个仓库必须满足什么 ────────────────────────────────────
+/// 1. 有一个 **非 draft** 的 Release（beta 通道从列表里按语义化版本筛，
+///    正式通道打 `/releases/latest`，预发布标签会被 GitHub 排除）；
+/// 2. tag 能按语义化版本解析（`v3.5.0-beta.1` 这种），`ziyong-20261108.2`
+///    那样的日期序号解析不出来，会被跳过；
+/// 3. 资产名形如 `Agent2API_<版本>_x64-setup.exe`（安装包的既有命名）。
+const APP_REPO: &str = "wocaoniubi123/Agent2API";
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ForceRule {
@@ -68,7 +83,9 @@ pub async fn resolve() -> AppIndex {
 
 fn parse(value: &Value) -> Option<AppIndex> {
     if value.get("schema").and_then(Value::as_u64) != Some(1) { return None; }
-    let index: AppIndex = serde_json::from_value(value.get("app")?.clone()).ok()?;
+    let mut index: AppIndex = serde_json::from_value(value.get("app")?.clone()).ok()?;
+    // 仓库固定成自己的（见 [`APP_REPO`]）；`forceUpdate` 仍是索引里的策略。
+    index.repo = APP_REPO.to_string();
     if !is_repo_slug(&index.repo) { return None; }
     for rule in [&index.force_update.stable, &index.force_update.beta] {
         if rule.message.chars().count() > 2000 { return None; }
