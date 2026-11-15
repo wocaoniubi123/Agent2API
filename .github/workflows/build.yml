@@ -122,9 +122,9 @@ name: build
 # `scripts/release.sh` 挂到构建仓库（脚本里的 `BUILD_REPO` 已指向那里）。
 
 on:
-  push:
-    tags:
-      - 'v*'
+  # 自用 fork 不随 tag 派发构建：本仓库没有构建仓库的派发令牌
+  # （`BUILDER_DISPATCH_TOKEN`），推 `v*` tag 只会白跑一次并失败。
+  # 需要构建时用下面的 `workflow_dispatch` 手动触发。
   workflow_dispatch:
     inputs:
       version:
