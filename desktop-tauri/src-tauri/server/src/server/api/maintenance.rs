@@ -19,7 +19,7 @@ pub async fn overview(
         // 每日全量强刷的开关与时刻（维护设置弹窗「凭证维护」下面那一行读它）
         let (daily_sweep, daily_sweep_at) = crate::server::config::credential_daily_sweep();
         Ok(json!({
-            "tasks": [scheduled_tasks::task_by_id(maintenance::CREDENTIAL), scheduled_tasks::task_by_id(maintenance::MODEL)],
+            "tasks": scheduled_tasks::tasks_by_ids(&[maintenance::CREDENTIAL, maintenance::MODEL]),
             "latest": latest,
             "records": records,
             "retentionDays": maintenance::storage::RETENTION_DAYS,

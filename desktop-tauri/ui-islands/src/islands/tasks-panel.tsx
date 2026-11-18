@@ -4,6 +4,7 @@ import { mountOnPage } from '../island-lazy'
 import { t } from '../i18n'
 import { panelRequest } from './panel-request'
 import { MaintenancePanel } from '../../../ui-shared/maintenance-panel'
+import { api as pluginTaskRequest } from './plugins-shared'
 import type { MaintenanceApi, MaintenanceDetail, MaintenanceOverview, MaintenanceQuery, MaintenanceTask, MaintenanceTaskId } from '../../../ui-shared/maintenance-types'
 
 type Host = {
@@ -58,7 +59,7 @@ function AutoMaintenancePage() {
     window.addEventListener('wb:maintenance-refresh', onRefresh)
     return () => { window.removeEventListener('wb:page', onPage); window.removeEventListener('wb:maintenance-refresh', onRefresh) }
   }, [])
-  return <MaintenancePanel api={api} active={active} revision={revision}
+  return <MaintenancePanel api={api} active={active} revision={revision} pluginTaskRequest={pluginTaskRequest}
     notify={(message, kind) => host().wbApp?.toast?.(message, kind)}
     onChanged={() => host().wbApp?.refresh?.()}
     onAccount={id => { host().wbApp?.showPage?.('accounts'); host().wbAccountPanel?.open(id) }} />
