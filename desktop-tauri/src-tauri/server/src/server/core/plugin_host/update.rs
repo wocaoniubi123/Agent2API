@@ -19,6 +19,11 @@ pub const FALLBACK_REPO: &str = "Agent2Builder/agent2api-providers-releases";
 /// **命中的插件同时豁免签名校验**：自编包没有 ed25519 私钥，不豁免的话在线更新
 /// 会在下载完成后卡在验签（2026-11-15 实测：下载 100% 后报「加速下载的插件未通过
 /// 可信签名校验」，错误又被后续候选的超时覆盖成「连接 GitHub 源超时」）。
+///
+/// ⚠️ **这张表是总开关**：命中即同时失去四项保护 —— 验签、官网路径校验、
+/// 自动更新的「已签名」门槛、下载阶段的 SHA-256 之外的那道官网守卫。
+/// **只放本 fork 自己编译的插件 id**，别把官网插件 id 加进来
+/// （2026-11-19 独立复核 P3-5）。
 pub const CUSTOM_REPOS: &[(&str, &str)] = &[("agent2api-providers", "wocaoniubi123/Agent2Providers")];
 
 /// 这个插件 id 是不是走自建仓库（命中即改查 GitHub Releases + 豁免签名校验）。
@@ -318,6 +323,9 @@ pub async fn release_for(
     release_for_channels(repo, id, detail, current, super::settings::current().channels()).await
 }
 
+/// `repo` **只做格式校验**（`valid_repo`）：真正的查询源由 `query_releases` 自己按
+/// `CUSTOM_REPOS` 反查（命中走 GitHub、否则走官网）。想换源请改 `CUSTOM_REPOS`，
+/// 改这个参数没有用（2026-11-19 独立复核 P3-6）。
 pub(super) async fn release_for_channels(
     repo: &str,
     id: &str,

@@ -57,7 +57,10 @@ pub fn download_url(value: &str) -> bool {
         let github = if host == "github.com" {
             url.query().is_none() && url.path().contains("/releases/download/")
         } else {
-            host.ends_with(".githubusercontent.com")
+            // 302 的目标只有这两个子域（Release 资产的 CDN）：带签名 query、路径不固定。
+            // 不收窄到这两个，等于承认「GitHub 上任意静态内容」（raw/gist）都可下载
+            // （2026-11-19 独立复核 P2-4）。
+            host == "release-assets.githubusercontent.com" || host == "objects.githubusercontent.com"
         };
         official || github
     })

@@ -948,6 +948,9 @@ Section Uninstall
     ; `$INSTDIR\data` —— 不删这里就等于「勾了删应用数据，密钥还留在盘上」
     ; （2026-11-19 独立复核新 P1）。
     RmDir /r "$INSTDIR\data"
+    ; `:883` 的 `RMDir "$INSTDIR"` 早于这里执行 —— 那时 data 还在、目录非空所以静默失败。
+    ; 删完 data 再补一次，卸载后不留空壳（2026-11-19 独立复核 P2-1）。
+    RMDir "$INSTDIR"
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL
