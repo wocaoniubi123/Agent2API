@@ -238,17 +238,20 @@ async fn fetch_catalog(channels: crate::server::config::UpdateChannels) -> Resul
         });
         let release = &entry["release"];
         let custom = update::is_custom_repo(id);
-        let selected = if release.is_null() { Ok(None) } else {
+        let selected = if custom {
+            // 自建仓库：**改查 GitHub Releases**（官网 `entry["release"]` 里是官方仓库的
+            // 地址，直接用等于自建源没生效 —— 2026-11-19 独立复核 P0-1）。
+            // `release_for_channels` 内部已经按同一份白名单豁免了路径校验与验签。
+            update::release_for_channels(&repo, id, Some(&detail), None, channels).await
+        } else if release.is_null() {
+            Ok(None)
+        } else {
             update::pick_release_assets(release, id, Some(&detail))
                 .ok_or_else(|| UpdateError::new("官网插件版本或附件格式无效"))
                 .and_then(|mut assets| {
-                    // 自建仓库的资产在 GitHub，官网路径校验不适用（2026-11-19 复核发现）。
-                    if !custom {
-                        update::validate_release_urls(release, &assets, id)?;
-                    }
+                    update::validate_release_urls(release, &assets, id)?;
                     if !channels.accepts(assets.prerelease) { return Err(UpdateError::new("官网插件版本不属于当前通道")); }
-                    // 自建仓库的包豁免签名校验；官网插件恒为 true。
-                    assets.require_signed = !custom;
+                    assets.require_signed = true;
                     Ok(Some(assets))
                 })
         };
@@ -385,7 +388,9 @@ async fn apply_automatic() {
         let should_update = installed.is_some_and(|pack| {
             pack.support_state == super::PackSupportState::Supported
                 && pack.enabled
-                && pack.signed
+                // 自建仓库的包没有 ed25519 签名，自动更新门槛对它不适用
+                // （2026-11-19 独立复核 P1-5）。
+                && (pack.signed || update::is_custom_repo(id))
                 && entry["version"].as_str().is_some_and(|version| {
                     crate::server::core::update::compare_versions(version, &pack.version) == Some(1)
                 })

@@ -488,7 +488,14 @@ pub async fn download(
             return Err(format!("下载插件包失败：GitHub 返回 HTTP {}", response.status().as_u16()));
         }
         let buffer = read_download(response, asset, &mut progress).await?;
-        // 自建仓库的包豁免签名校验（自编包没有 ed25519 私钥）。
+        // 自建仓库的包豁免**签名**校验（自编包没有 ed25519 私钥），但 **SHA-256 照校验**：
+        // GitHub API 的 `assets[].digest` 同样能填进 `asset.sha256`
+        // （2026-11-19 独立复核 P0-2：此前整段跳过，完整性校验对自建仓库形同虚设）。
+        if let Some(expected) = asset.sha256.as_ref() {
+            if super::install::sha256_hex(&buffer) != *expected {
+                return Err("自建仓库下载的插件包 SHA-256 不一致，已拒绝使用".to_string());
+            }
+        }
         return Ok(buffer);
     }
 

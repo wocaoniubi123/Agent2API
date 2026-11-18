@@ -74,9 +74,9 @@ fn exe_side_dir() -> Option<PathBuf> {
 
 /// 传统配置目录：`{用户主目录}/.agent2api`（exe 旁不可写时的回落）。
 ///
-/// 也用于「把旧位置的数据搬到 exe 旁」这条一次性迁移 —— 见
-/// `server::config_migration`。名字单独暴露，是因为迁移需要知道
-/// 「除当前 `config_dir()` 之外，上一版把数据放过哪」。
+/// ⚠️ **不做**「`~/.agent2api` → exe 旁」的自动迁移 —— 见 `server::config_migration`
+/// 模块头：那是有意为之（从旧位置搬数据容易搬错、搬重，让用户显式选择更安全）。
+/// 本函数只用于「判断当前配置目录是不是回落目录」，以及迁移日志里指认旧位置。
 pub fn home_config_dir() -> PathBuf {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))

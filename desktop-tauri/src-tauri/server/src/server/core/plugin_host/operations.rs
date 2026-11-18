@@ -327,7 +327,8 @@ async fn run(
     persist(id);
     let expected_id = id.to_string();
     let version = asset.version.clone();
-    let require_signed = policy.signed() || asset.require_signed;
+    let require_signed = asset.require_signed
+        || (policy.signed() && !update::is_custom_repo(&expected_id));
     let prepared = tokio::task::spawn_blocking(move || {
         packages::prepare(&bytes, Some(&expected_id), Some(&version), require_signed)
     })

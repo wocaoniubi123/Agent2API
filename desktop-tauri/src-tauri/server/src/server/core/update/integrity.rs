@@ -54,9 +54,19 @@ pub async fn trusted_digest(value: &str) -> Option<(String, u64)> {
     if let Some(digest) = cached(value) { return Some(digest); }
     let url = url::Url::parse(value).ok()?;
     let parts: Vec<_> = url.path_segments()?.collect();
-    let ["downloads", owner, repo, tag, _name] = parts.as_slice() else { return None; };
-    let repository = format!("{owner}/{repo}");
-    let endpoint = format!("{}/repos/{repository}/releases/tags/{tag}", website::API_BASE);
+    // 官网是 `/downloads/{owner}/{repo}/{tag}/{name}`；自用 fork 的 GitHub 是
+    // `/owner/repo/releases/download/{tag}/{name}`（2026-11-19 独立复核 P1-4：
+    // 原来只认前者，GitHub 的 6 段路径直接返回 None → 缓存过期后下载被 fail-closed 拒）。
+    let (repository, tag, api) = match parts.as_slice() {
+        ["downloads", owner, repo, tag, _name] => {
+            (format!("{owner}/{repo}"), tag.to_string(), website::API_BASE)
+        }
+        [owner, repo, "releases", "download", tag, _name] => {
+            (format!("{owner}/{repo}"), tag.to_string(), "https://api.github.com")
+        }
+        _ => return None,
+    };
+    let endpoint = format!("{api}/repos/{repository}/releases/tags/{tag}");
     let response = website::fetch_json(&endpoint, 15_000).await.ok()?;
     if !response.status.is_success() { return None; }
     remember_website_release(&response.value, &repository);
