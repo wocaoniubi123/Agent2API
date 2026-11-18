@@ -78,7 +78,11 @@ pub fn installer_url(value: &str, repository: &str, tag: &str, name: &str) -> bo
     }
     let Ok(url) = url::Url::parse(value) else { return false; };
     let component = |text: &str| url::form_urlencoded::byte_serialize(text.as_bytes()).collect::<String>();
-    url.path() == format!("/downloads/{repository}/{}/{}", component(tag), component(name))
+    let official = url.path() == format!("/downloads/{repository}/{}/{}", component(tag), component(name));
+    // 自用 fork：GitHub Releases 资产（`/{owner}/{repo}/releases/download/{tag}/{name}`）
+    let github = url.host_str() == Some("github.com")
+        && url.path() == format!("/{repository}/releases/download/{}/{}", component(tag), component(name));
+    official || github
 }
 
 /// 每次跳转均检查官网与资源类型，避免由可信入口跳到外部下载站。

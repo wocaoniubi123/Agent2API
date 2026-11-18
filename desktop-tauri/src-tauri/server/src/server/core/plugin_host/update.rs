@@ -458,9 +458,19 @@ pub async fn download(
     asset: &PackAsset,
     mut progress: impl FnMut(u64, u64),
 ) -> Result<Vec<u8>, String> {
-    if !website::trusted_url(&asset.url) || !url::Url::parse(&asset.url).is_ok_and(|url| {
+    let version_marker = format!("-{}-", asset.version);
+    let pack_id = asset.name.strip_suffix(".zip").and_then(|name| {
+        name.split_once(version_marker.as_str())
+            .map(|(id, _)| id.to_string())
+    });
+    let custom = pack_id.as_deref().is_some_and(is_custom_repo);
+
+    // 官网守卫：**只对官网插件生效**。自建仓库的资产在 GitHub，路径不可能落在
+    // `/downloads/plugins/` 下，不跳过这道守卫的话自建仓库永远下不到包
+    // （2026-11-19 合并复核时发现）。
+    if !custom && (!website::trusted_url(&asset.url) || !url::Url::parse(&asset.url).is_ok_and(|url| {
         url.path().starts_with("/downloads/plugins/") && url.query().is_none()
-    }) { return Err("官方插件只能从官网下载，请重新刷新插件列表".to_string()); }
+    })) { return Err("官方插件只能从官网下载，请重新刷新插件列表".to_string()); }
     crate::server::core::update::assert_downloadable(&asset.url).map_err(|error| error.message)?;
     if asset.size > MAX_PACK_BYTES as u64 {
         return Err(format!("插件包超过 {} MiB 上限", MAX_PACK_BYTES / (1024 * 1024)));
@@ -469,15 +479,10 @@ pub async fn download(
         ("User-Agent".to_string(), "agent2api-plugin".to_string()),
         ("Accept".to_string(), "application/octet-stream".to_string()),
     ];
-    let version_marker = format!("-{}-", asset.version);
-    let pack_id = asset.name.strip_suffix(".zip").and_then(|name| {
-        name.split_once(version_marker.as_str())
-            .map(|(id, _)| id.to_string())
-    });
     // 自用 fork：自建仓库走 GitHub Releases 直链（单源）。
     // 上游官网那条「地址必须落在 /downloads/ 内」的校验对 GitHub 不适用，
     // 这里提前返回，不进入下面的官网分支。
-    if pack_id.as_deref().is_some_and(is_custom_repo) {
+    if custom {
         let response = website::request(&asset.url, &headers, None).await.map_err(|error| error.message)?;
         if response.status().as_u16() != 200 {
             return Err(format!("下载插件包失败：GitHub 返回 HTTP {}", response.status().as_u16()));
