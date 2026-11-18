@@ -266,7 +266,10 @@ async fn fetch_catalog(channels: crate::server::config::UpdateChannels) -> Resul
                 let digests = release.digests.clone();
                 value["platforms"] = json!(release.platforms.into_iter().map(|(target, url, size)| {
                     let digest = digests.get(&url).cloned();
-                    json!({ "current": target == current || target == super::wasm::manifest::TARGET, "target": target, "url": url, "size": size, "requireSigned": true, "sha256": digest })
+                    // 这里必须跟上面 `"requireSigned"` 同一口径：`operations::start_cached`
+                    // 是从 `platform["requireSigned"]` 读值的，硬编码 true 会把自建仓库的
+                    // 豁免在安装入口抵消掉（2026-11-19 复核第 6 个 bug）。
+                    json!({ "current": target == current || target == super::wasm::manifest::TARGET, "target": target, "url": url, "size": size, "requireSigned": !update::is_custom_repo(id), "sha256": digest })
                 }).collect::<Vec<_>>());
                 if let Some(reason) = compatibility_error {
                     value["error"] = json!(true);
