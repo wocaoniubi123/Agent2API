@@ -208,11 +208,13 @@ async fn fetch_catalog(channels: crate::server::config::UpdateChannels) -> Resul
             homepage: entry["detail"]["homepage"].as_str().unwrap_or("").to_string(),
             require_signed: true,
         };
-        // 自建仓库按 id 覆盖（见 `update::CUSTOM_REPOS`）：默认用官网索引给的值。
-        let repo: &str = update::CUSTOM_REPOS
-            .iter()
-            .find(|(custom, _)| *custom == id)
-            .map(|(_, repo)| *repo)
+        // 自建仓库按 id 覆盖（见 `update::CUSTOM_REPOS` 与 `update::WASM_REPO`）：
+        // 默认用官网索引给的值。Wasm 拆包后包 id 是 `agent2api-wasm-*`，
+        // 前缀认领同样命中这里。
+        let custom_source = update::custom_source(id);
+        let repo: &str = custom_source
+            .as_ref()
+            .map(|(repo, _)| *repo)
             .unwrap_or(detail.repo.as_str());
         let old = cached["plugins"]
             .as_array()
@@ -246,7 +248,7 @@ async fn fetch_catalog(channels: crate::server::config::UpdateChannels) -> Resul
         } else if release.is_null() {
             Ok(None)
         } else {
-            update::pick_release_assets(release, id, Some(&detail))
+            update::pick_release_assets(release, id, Some(&detail), None)
                 .ok_or_else(|| UpdateError::new("官网插件版本或附件格式无效"))
                 .and_then(|mut assets| {
                     update::validate_release_urls(release, &assets, id)?;

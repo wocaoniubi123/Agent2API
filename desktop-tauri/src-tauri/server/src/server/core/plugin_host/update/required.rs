@@ -12,7 +12,7 @@ pub(in crate::server::core::plugin_host) async fn required_release(
     let encoded: String = url::form_urlencoded::byte_serialize(tag.as_bytes()).collect();
     if let Some(response) = query_releases(id, &format!("/tags/{encoded}"), false).await? {
         if response.value["draft"] != true {
-            if let Some(release) = pick_release_assets(&response.value, id, Some(detail)) {
+            if let Some(release) = pick_release_assets(&response.value, id, Some(detail), None) {
                 if compare_versions(&release.version, minimum) == Some(0) {
                     super::validate_release_urls(&response.value, &release, id)?;
                     if let Some(mut asset) = release.asset(id, target) {
@@ -32,7 +32,7 @@ pub(in crate::server::core::plugin_host) async fn required_release(
         if release_value["draft"] == true {
             continue;
         }
-        let Some(release) = pick_release_assets(release_value, id, Some(detail)) else {
+        let Some(release) = pick_release_assets(release_value, id, Some(detail), None) else {
             continue;
         };
         super::validate_release_urls(release_value, &release, id)?;

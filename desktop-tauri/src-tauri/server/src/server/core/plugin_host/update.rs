@@ -24,11 +24,59 @@ pub const FALLBACK_REPO: &str = "Agent2Builder/agent2api-providers-releases";
 /// 自动更新的「已签名」门槛、下载阶段的 SHA-256 之外的那道官网守卫。
 /// **只放本 fork 自己编译的插件 id**，别把官网插件 id 加进来
 /// （2026-11-19 独立复核 P3-5）。
+/// 只列**单包**的自编插件；Wasm 拆包后的几十个 `agent2api-wasm-*` 走
+/// [`WASM_REPO`] 的前缀认领，不往这张表里堆。
 pub const CUSTOM_REPOS: &[(&str, &str)] = &[("agent2api-providers", "wocaoniubi123/Agent2Providers")];
+
+/// Wasm 插件的发布仓库（`agent2api-wasm-*` 全部落在这里）。
+///
+/// beta.2 起上游把提供商插件按「一家一个包」拆成 Wasm 包：包 id 形如
+/// `agent2api-wasm-<provider>`、tag 形如 `wasm-<provider>-v<version>`
+/// （见上游 `.github/workflows/wasm-build.yml` 的 `wasm-*-v*` 触发，
+/// 以及它校验 tag 的正则 `^wasm-([a-z][a-z0-9-]*)-v(...)$`）。
+///
+/// 分家之后一个仓库里会有几十个包：逐个写进 `CUSTOM_REPOS` 既啰嗦又容易漏，
+/// 所以按前缀整段认领 —— 只要 id 是 `agent2api-wasm-<合法后缀>`，就认定是
+/// 我们自己发布的包。
+pub const WASM_REPO: &str = "wocaoniubi123/Agent2Providers";
+
+/// Wasm 插件包 id 的前缀（`agent2api-wasm-<provider>`）。
+pub const WASM_ID_PREFIX: &str = "agent2api-wasm-";
+
+/// 自建包 id 的合法后缀：小写字母、数字、连字符（与 `query_releases` 的
+/// 标识校验、`catalog` 的索引项校验同一口径）。
+fn valid_custom_suffix(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+/// 命中自建仓库时返回「发布仓库 + tag 模板」，官网插件返回 `None`。
+///
+/// tag 模板与官网 `PluginDetail::tag_template` 同形（带 `{version}` 占位），
+/// 调用方拿它去 `release_version` 里拆 tag。**上游 Wasm 包的 tag 是
+/// `wasm-<provider>-v<version>`，用官网默认的 `v{version}` 解不出来**
+/// —— 这正是本函数存在的理由：自定义仓库拿不到 `PluginDetail`，
+/// 模板只能自己按 id 推。
+pub fn custom_source(id: &str) -> Option<(&'static str, String)> {
+    if let Some((_, repo)) = CUSTOM_REPOS.iter().find(|(custom, _)| *custom == id) {
+        return Some((repo, "v{version}".to_string()));
+    }
+    let provider = id.strip_prefix(WASM_ID_PREFIX)?;
+    if !valid_custom_suffix(provider) {
+        return None;
+    }
+    Some((WASM_REPO, format!("wasm-{provider}-v{{version}}")))
+}
 
 /// 这个插件 id 是不是走自建仓库（命中即改查 GitHub Releases + 豁免签名校验）。
 pub fn is_custom_repo(id: &str) -> bool {
     CUSTOM_REPOS.iter().any(|(custom, _)| *custom == id)
+        || id
+            .strip_prefix(WASM_ID_PREFIX)
+            .is_some_and(valid_custom_suffix)
 }
 
 /// 自建仓库的 Release 查询仍走 GitHub API。
@@ -251,9 +299,13 @@ pub(super) fn pick_release_assets(
     release: &Value,
     id: &str,
     detail: Option<&PluginDetail>,
+    tag_template: Option<&str>,
 ) -> Option<ReleaseAssets> {
-    let tag = detail
-        .map(|detail| detail.tag_template.as_str())
+    // 模板优先级：调用方显式给的（自建仓库按 id 推出来的）> 官网索引的 > 默认。
+    // 自建仓库拿不到 `PluginDetail`，Wasm 包的 tag 又和官网默认模板不同形，
+    // 所以第一条是必需的，不是冗余。
+    let tag = tag_template
+        .or_else(|| detail.map(|detail| detail.tag_template.as_str()))
         .unwrap_or("v{version}");
     let version = release_version(release, tag)?;
     let template = detail
@@ -336,10 +388,16 @@ pub(super) async fn release_for_channels(
     if !valid_repo(repo) {
         return Err(UpdateError::new("插件发布仓库必须是 owner/repo"));
     }
-    let custom_tag = detail
-        .map(|detail| detail.tag_template != "v{version}")
-        .unwrap_or(false);
-    let listed = channels.beta || custom_tag;
+    // 自建仓库拿不到 `PluginDetail`，tag 模板只能按 id 自己推（见 `custom_source`）。
+    // Wasm 包的 tag 是 `wasm-<provider>-v<version>`：`/latest` 只回整个仓库最新的
+    // 那一条 Release，几十个包混在一个仓库里必然张冠李戴 —— 所以标签模板不是默认值
+    // 时必须翻列表，由下面的 `pick_release_assets` 按各自模板逐条认领。
+    let custom = custom_source(id);
+    let tag_template: Option<&str> = custom
+        .as_ref()
+        .map(|(_, tag)| tag.as_str())
+        .or_else(|| detail.map(|detail| detail.tag_template.as_str()));
+    let listed = channels.beta || tag_template.is_some_and(|tag| tag != "v{version}");
     let response = match query_releases(
         id,
         if listed { "?per_page=100" } else { "/latest" },
@@ -365,7 +423,7 @@ pub(super) async fn release_for_channels(
         if release.get("draft").and_then(Value::as_bool) == Some(true) {
             continue;
         }
-        let Some(mut assets) = pick_release_assets(release, id, detail) else {
+        let Some(mut assets) = pick_release_assets(release, id, detail, tag_template) else {
             continue;
         };
         // 上游：官网包的下载地址必须落在官网受控路径内 —— 自建仓库（GitHub）不适用这条。
@@ -406,7 +464,7 @@ async fn query_releases(
     }
     // 自用 fork：自建仓库改查 GitHub Releases。响应与官网同形
     // （`tag_name` / `assets[].browser_download_url`），下游解析无需改动。
-    if let Some((_, repo)) = CUSTOM_REPOS.iter().find(|(custom, _)| *custom == id) {
+    if let Some((repo, _)) = custom_source(id) {
         let url = format!("{GITHUB_API}/repos/{repo}/releases{suffix}");
         let response = website::fetch_json(&url, QUERY_TIMEOUT_MS).await?;
         if response.status.as_u16() == 404 {
@@ -590,7 +648,7 @@ pub fn check_result(
 
 #[cfg(test)]
 fn pick_asset(release: &Value, id: &str, target: &str) -> Option<PackAsset> {
-    pick_release_assets(release, id, None)?.asset(id, target)
+    pick_release_assets(release, id, None, None)?.asset(id, target)
 }
 
 #[cfg(test)]
