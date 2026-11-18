@@ -237,13 +237,18 @@ async fn fetch_catalog(channels: crate::server::config::UpdateChannels) -> Resul
             "platforms": [], "error": false, "reason": Value::Null,
         });
         let release = &entry["release"];
+        let custom = update::is_custom_repo(id);
         let selected = if release.is_null() { Ok(None) } else {
             update::pick_release_assets(release, id, Some(&detail))
                 .ok_or_else(|| UpdateError::new("官网插件版本或附件格式无效"))
                 .and_then(|mut assets| {
-                    update::validate_release_urls(release, &assets, id)?;
+                    // 自建仓库的资产在 GitHub，官网路径校验不适用（2026-11-19 复核发现）。
+                    if !custom {
+                        update::validate_release_urls(release, &assets, id)?;
+                    }
                     if !channels.accepts(assets.prerelease) { return Err(UpdateError::new("官网插件版本不属于当前通道")); }
-                    assets.require_signed = true;
+                    // 自建仓库的包豁免签名校验；官网插件恒为 true。
+                    assets.require_signed = !custom;
                     Ok(Some(assets))
                 })
         };

@@ -173,6 +173,9 @@ impl Harness {
             auth,
             billing,
             request_stats: Arc::new(RequestStats::with_db(Some(db.clone()), Retention::default)),
+            // beta.2 新增的两个字段：上游漏在测试构造里补（2026-11-19 合并时发现）
+            advertisements: crate::server::core::advertisements::AdvertisementCache::new(Some(db.clone())),
+            panel_events_stop: tokio_util::sync::CancellationToken::new(),
             db: Some(db),
             upgrade_pending: Arc::new(AtomicBool::new(false)),
             startup_maintenance: Arc::new(AtomicBool::new(false)),
