@@ -29,7 +29,10 @@ impl InstallPolicy {
                 let settings = settings::current();
                 let allowed = settings.auto_update && installed.is_some_and(|pack| {
                     super::super::support::installed_state(&pack) == super::super::PackSupportState::Supported
-                        && pack.enabled && pack.signed
+                        // 自建仓库的包没有 ed25519 签名，自动更新的「已签名」门槛对它不适用
+                        // （2026-11-19 独立复核新 P1：catalog 的 should_update 放行后，
+                        // 仍会在这里被拒，自动更新等于永远不发生）。
+                        && pack.enabled && (pack.signed || update::is_custom_repo(id))
                         && compare_versions(&asset.version, &pack.version) == Some(1)
                 });
                 if !allowed || !settings.auto_check || settings.channels() != channels {

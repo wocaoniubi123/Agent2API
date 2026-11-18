@@ -944,6 +944,10 @@ Section Uninstall
     SetShellVarContext current
     RmDir /r "$APPDATA\${BUNDLEID}"
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
+    ; 网关把运行时产物（账号库、密钥、插件、日志、WebView 缓存）放在
+    ; `$INSTDIR\data` —— 不删这里就等于「勾了删应用数据，密钥还留在盘上」
+    ; （2026-11-19 独立复核新 P1）。
+    RmDir /r "$INSTDIR\data"
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL

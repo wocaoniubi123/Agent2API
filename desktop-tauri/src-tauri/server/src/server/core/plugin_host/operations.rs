@@ -213,11 +213,12 @@ pub fn start_cached(
         url: platform["url"].as_str().unwrap_or("").to_string(),
         size: platform["size"].as_u64().unwrap_or(0),
         page: String::new(),
-        // 自建仓库的插件豁免「自动更新必须签名」这条（见 `update::CUSTOM_REPOS`）：
-        // 自编包没有 ed25519 私钥；不豁免的话后台自动更新会在下载完成后验签失败。
-        // 官网插件没命中白名单 → `platform["requireSigned"]` 上游给的是 true，行为不变。
-        require_signed: platform["requireSigned"] == true
-            || (automatic && !update::is_custom_repo(id)),
+        // 官网插件**恒**要求验签（与上游 `require_signed: true` 一致）；自建仓库的包
+        // 没有 ed25519 私钥，豁免。
+        //
+        // 不再依赖 `platform["requireSigned"]`：`catalog` 回填旧缓存时该字段可能不存在，
+        // 会让官网插件的手动安装变成「不验签」（2026-11-19 独立复核新 P1）。
+        require_signed: !update::is_custom_repo(id),
         sha256: platform["sha256"].as_str().map(str::to_string),
     };
     let policy = if automatic {

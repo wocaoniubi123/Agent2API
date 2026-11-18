@@ -49,13 +49,16 @@ pub fn api_url(value: &str) -> bool {
 pub fn download_url(value: &str) -> bool {
     trusted_url(value) && url::Url::parse(value).is_ok_and(|url| {
         let official = url.path().starts_with("/downloads/") && url.query().is_none();
-        // 自用 fork：GitHub Releases 资产。
-        // github.com 走 `/owner/repo/releases/download/<tag>/<name>`；
-        // 302 之后的 `*.githubusercontent.com` 路径不固定，只校验域名与无 query。
         let host = url.host_str().unwrap_or("");
-        let github = url.query().is_none()
-            && (host.ends_with(".githubusercontent.com")
-                || (host == "github.com" && url.path().contains("/releases/download/")));
+        // GitHub：入口 `github.com/<owner>/<repo>/releases/download/...` 不带 query；
+        // 302 之后的 CDN（`*.githubusercontent.com`）**一定带签名 query**
+        // （`?sp=&sig=` / `?X-Amz-*`），不能要求 query 为空 —— 否则跳转校验必然拒绝
+        // （2026-11-19 独立复核新 P0，是上一轮放宽时引入的）。
+        let github = if host == "github.com" {
+            url.query().is_none() && url.path().contains("/releases/download/")
+        } else {
+            host.ends_with(".githubusercontent.com")
+        };
         official || github
     })
 }
