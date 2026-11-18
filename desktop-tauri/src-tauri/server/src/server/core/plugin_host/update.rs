@@ -100,6 +100,30 @@ pub fn asset_name(pack_id: &str, version: &str, target: &str) -> String {
     format!("{pack_id}-{version}-{target}.zip")
 }
 
+/// 自建仓库 Releases 查询的缓存时长。
+///
+/// ── 为什么需要缓存 ──────────────────────────────────────────
+/// 一次「检查更新」要对每个 wasm 包各查一次
+/// `api.github.com/repos/{repo}/releases`（35 个包就是 35 次），而**匿名**调用
+/// 的限额只有 60 次/小时 —— 一次全量检查就用掉 58%，一小时内点第二次必然 403
+/// （2026-11-19 实测：remaining 41，一次检查要 35 次）。
+///
+/// 同一个仓库的 Release 列表在几十秒内不会变，按 URL 缓存 60 秒能把 35 次压成
+/// 1 次；60 秒也足够短，不会让「刚发布的版本」被长期遮蔽。
+const CUSTOM_RELEASES_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// 自建仓库 Releases 的进程内缓存：`url -> (取回时刻, 应答)`。
+///
+/// 只缓存**成功**应答：404 与错误不缓存，让下次重新问 —— 否则「刚建的 Release」
+/// 会因为一次早于它存在的 404 被遮蔽一分钟。
+fn custom_releases_cache() -> &'static tokio::sync::Mutex<
+    std::collections::HashMap<String, (std::time::Instant, website::JsonResponse)>,
+> {
+    type Cache = std::collections::HashMap<String, (std::time::Instant, website::JsonResponse)>;
+    static CACHE: std::sync::OnceLock<tokio::sync::Mutex<Cache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| tokio::sync::Mutex::new(Cache::new()))
+}
+
 #[derive(Clone, Debug)]
 pub struct IndexEntry {
     pub id: String,
@@ -466,7 +490,28 @@ async fn query_releases(
     // （`tag_name` / `assets[].browser_download_url`），下游解析无需改动。
     if let Some((repo, _)) = custom_source(id) {
         let url = format!("{GITHUB_API}/repos/{repo}/releases{suffix}");
-        let response = website::fetch_json(&url, QUERY_TIMEOUT_MS).await?;
+        // 60 秒内同一个 URL 直接复用上次的**成功**应答：把「一次检查更新打 35 次
+        // GitHub」压成 1 次（理由与 TTL 取值见 `CUSTOM_RELEASES_TTL`）。
+        let cached = {
+            let guard = custom_releases_cache().lock().await;
+            guard
+                .get(&url)
+                .filter(|(at, _)| at.elapsed() < CUSTOM_RELEASES_TTL)
+                .map(|(_, response)| response.clone())
+        };
+        let response = match cached {
+            Some(response) => response,
+            None => {
+                let fetched = website::fetch_json(&url, QUERY_TIMEOUT_MS).await?;
+                if fetched.status.is_success() {
+                    custom_releases_cache()
+                        .lock()
+                        .await
+                        .insert(url.clone(), (std::time::Instant::now(), fetched.clone()));
+                }
+                fetched
+            }
+        };
         if response.status.as_u16() == 404 {
             return Ok(None);
         }

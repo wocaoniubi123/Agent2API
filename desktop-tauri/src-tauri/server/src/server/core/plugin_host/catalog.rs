@@ -159,17 +159,97 @@ pub async fn refresh(manual: bool) -> Result<Value, String> {
     match outcome {
         Ok(mut value) => {
             value["channels"] = json!(channels);
+            supplement_custom(&mut value, channels).await;
             let partial = value["plugins"].as_array().is_some_and(|items| items.iter().any(|item| item["error"] == true));
             let summary = if partial { "插件列表已刷新，部分版本查询失败" } else { "插件检查完成" };
             guard.finish(true, summary.to_string(), Some(value), 0, interval)?;
             Ok(snapshot())
         }
         Err(error) => {
-            let value = task_state::read(&channel_key)?.value.filter(Value::is_object)
+            // 官网目录挂了也要把自建仓库的包补进来 —— 否则「检查更新」对每个
+            // wasm 包都报「官网插件目录暂不可用」，`latest` 恒为 null，界面
+            // 永远看不到可更新的版本（2026-11-19 实测）。
+            let mut value = task_state::read(&channel_key)?.value.filter(Value::is_object)
                 .unwrap_or_else(|| json!({ "plugins": [] }));
+            // `channels` 必须写回去：`snapshot_from_state` 以「channels 与当前通道
+            // 不符」判定整份快照失效并清空 `plugins`。少了这一行，下面补进去的
+            // 条目会被立刻丢掉 —— 2026-11-19 实测：补了 35 条，读出来是 0 条。
+            value["channels"] = json!(channels);
+            supplement_custom(&mut value, channels).await;
             guard.finish(false, error.message.clone(), Some(value), 0, interval)?;
             Err(error.message)
         }
+    }
+}
+
+/// 把「自建仓库的包」补进 catalog。
+///
+/// ── 为什么必须有这一段 ──────────────────────────────────────
+/// `fetch_catalog` 的解析循环只遍历**官网索引里的条目**，而自建仓库的包
+/// （`CUSTOM_REPOS` 的单包、以及 `agent2api-wasm-*` 那一批）根本不在
+/// `agent2api.dev` 上 —— 官网索引里一个都没有，那个循环对它们一次都不会跑。
+/// 官网目录不可用时更彻底：`plugins` 直接是空数组。
+///
+/// 2026-11-19 实测后果：装好 35 个 wasm 包后，`/api/plugins/update` 对每一个都
+/// 回「官网插件目录暂不可用」、`latest` 恒为 null、`platforms` 恒为空 ——
+/// 「检查更新」形同虚设。
+///
+/// 所以这里对每个 `custom_source` 命中的**已装包**单独查一次自建仓库，把条目
+/// 补进 `plugins`；官网索引里已经有的（正常不会有）跳过，避免重复查。
+///
+/// 单次查询的 GitHub 限额问题由 `update::query_releases` 里的 60 秒缓存兜住。
+async fn supplement_custom(value: &mut Value, channels: crate::server::config::UpdateChannels) {
+    let known: Vec<String> = value["plugins"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item["id"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut added: Vec<Value> = Vec::new();
+    for pack in super::list_packs() {
+        if known.iter().any(|id| id == &pack.id) {
+            continue;
+        }
+        let Some((repo, _)) = update::custom_source(&pack.id) else {
+            continue;
+        };
+        // 查不到就跳过：这一条只负责「补」，不是权威结果，不能因此把已装包标错。
+        let Ok(Some(release)) =
+            update::release_for_channels(&repo, &pack.id, None, None, channels).await
+        else {
+            continue;
+        };
+        let digests = release.digests.clone();
+        added.push(json!({
+            "id": pack.id,
+            "name": pack.name,
+            "description": pack.description.clone().unwrap_or_default(),
+            "repository": repo,
+            // 自建仓库一律不要求签名（与 `update::is_custom_repo` 同一口径）
+            "requireSigned": false,
+            "version": release.version,
+            "page": release.page,
+            "notes": release.notes,
+            "publishedAt": release.published_at,
+            "prerelease": release.prerelease,
+            "platforms": release.platforms.into_iter().map(|(target, url, size)| {
+                let digest = digests.get(&url).cloned();
+                json!({ "current": target == super::wasm::manifest::TARGET, "target": target,
+                        "url": url, "size": size, "requireSigned": false, "sha256": digest })
+            }).collect::<Vec<_>>(),
+            "error": false,
+            "reason": Value::Null,
+        }));
+    }
+    if added.is_empty() {
+        return;
+    }
+    match value["plugins"].as_array_mut() {
+        Some(items) => items.extend(added),
+        None => value["plugins"] = json!(added),
     }
 }
 

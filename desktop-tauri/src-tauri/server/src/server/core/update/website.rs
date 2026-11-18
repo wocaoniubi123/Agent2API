@@ -10,6 +10,9 @@ pub const ORIGIN: &str = "https://agent2api.dev";
 pub const API_BASE: &str = "https://agent2api.dev/api/updates";
 pub const PLUGIN_BASE: &str = "https://agent2api.dev/api/plugins";
 
+/// `value` 与 `status` 都是可克隆的纯数据，加 `Clone` 是为了让上层把成功应答
+/// 缓存起来复用（见 `plugin_host::update` 里自建仓库的 Releases 缓存）。
+#[derive(Clone)]
 pub struct JsonResponse {
     pub value: Value,
     pub status: reqwest::StatusCode,
