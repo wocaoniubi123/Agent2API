@@ -14,7 +14,9 @@ use crate::server::core::plugin_host::{wasm::context::Shared, Host};
 const MAX_BODY: usize = 16 * 1024 * 1024;
 const MAX_DEPTH: usize = 64;
 const MAX_NODES: usize = 65_536;
-const MAX_MESSAGES: usize = 512;
+// 条数不单独设闸门：上下文越长条数自然越多，真正吃内存的是字节总量与
+// JSON 节点数，这两道已经守住（16 MB / 65536 节点，折合约 1.6 万条）。
+// 曾设过 `messages ≤ 512`，与 workbuddy 那处同一类问题（2026-11-19 一并去掉）。
 const MAX_TOOLS: usize = 256;
 const MAX_BLOCKS: usize = 1024;
 const MAX_ARGUMENTS: usize = 256 * 1024;
@@ -159,7 +161,7 @@ fn validate_body(body: &Value) -> Result<(), proto::WireError> {
 }
 
 fn validate_messages(value: &Value, decoded_nodes: &mut usize) -> Result<(), proto::WireError> {
-    let messages = value.as_array().filter(|messages| !messages.is_empty() && messages.len() <= MAX_MESSAGES).ok_or_else(invalid)?;
+    let messages = value.as_array().filter(|messages| !messages.is_empty()).ok_or_else(invalid)?;
     for message in messages {
         let object = message.as_object().ok_or_else(invalid)?;
         let role = object.get("role").and_then(Value::as_str).filter(|role| matches!(*role, "system" | "developer" | "user" | "assistant" | "tool")).ok_or_else(invalid)?;

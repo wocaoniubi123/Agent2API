@@ -35,7 +35,12 @@ const ORIGINS: [&str; 4] = [
     "https://www.workbuddy.cn", "https://copilot.tencent.com", "https://wb.tencentbuddy.com",
     "https://www.codebuddy.cn",
 ];
-const MAX_BODY: usize = 8 * 1024 * 1024;
+/// 对话正文上限。条数不单独设闸门：上下文越长条数自然越多，真正会吃掉内存
+/// 的是字节总量与 JSON 节点数，这两道已经守住（15 MB / 65536 节点，
+/// 折合约 1.6 万条，远在上游对话接口的合理范围内）。曾设过 `messages ≤ 512`
+/// 的条数限制，它与字节限制是两回事，且比节点上限严 20 倍，是长会话
+/// `material:messages-over-512` 的直接拒因（2026-11-19 实测 536 条被拒）。
+const MAX_BODY: usize = 15 * 1024 * 1024;
 const MAX_ENCODED: usize = ((MAX_BODY + 2) / 3) * 4;
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_NODES: usize = 65_536;
@@ -244,11 +249,20 @@ impl Binding {
 impl SendTicket {
     fn consume(self, request: &reqwest::Request, url: &str, headers: &HeaderMap, bytes: &Bytes) -> Result<(), proto::WireError> {
         // 核对实际构造请求而非只核JSON；固定材料不得贴到另一URL、另一正文或另一套头。
-        if request.method() != reqwest::Method::POST || request.url().as_str() != url
-            || request.body().and_then(reqwest::Body::as_bytes) != Some(bytes.as_ref())
-            || request.headers().len() != headers.len()
-            || headers.iter().any(|(name, value)| request.headers().get(name) != Some(value)) {
-            return Err(invalid());
+        if request.method() != reqwest::Method::POST {
+            return Err(invalid("consume:method"));
+        }
+        if request.url().as_str() != url {
+            return Err(invalid("consume:url"));
+        }
+        if request.body().and_then(reqwest::Body::as_bytes) != Some(bytes.as_ref()) {
+            return Err(invalid("consume:body"));
+        }
+        if request.headers().len() != headers.len() {
+            return Err(invalid("consume:header-count"));
+        }
+        if headers.iter().any(|(name, value)| request.headers().get(name) != Some(value)) {
+            return Err(invalid("consume:header-value"));
         }
         self.binding.headers_deadline.check()?;
         self.binding.with_gate(true, |_| {
@@ -260,35 +274,39 @@ impl SendTicket {
 
 fn route(context: &Context, params: &Value) -> Result<Option<String>, proto::WireError> {
     if context.shared.options.provider != PROVIDER { return Ok(None); }
-    let raw = params["url"].as_str().filter(|url| url.len() <= 8192).ok_or_else(invalid)?;
-    let parsed = url::Url::parse(raw).map_err(|_| invalid())?;
+    let raw = params["url"].as_str().filter(|url| url.len() <= 8192).ok_or_else(|| invalid("route:url"))?;
+    let parsed = url::Url::parse(raw).map_err(|_| invalid("route:parse"))?;
     // 识别一次/多次编码及重复斜杠的对话别名后拒绝，不能借普通HTTP绕过固定路线。
     let mut probe = parsed.path().to_string();
     for _ in 0..4 {
-        let decoded = super::decoded_path(&probe).map_err(|_| invalid())?;
+        let decoded = super::decoded_path(&probe).map_err(|_| invalid("route:decode"))?;
         if decoded == probe { break; }
         probe = decoded;
     }
-    if probe.contains('%') { return Err(invalid()); }
+    if probe.contains('%') { return Err(invalid("route:percent")); }
     let normalized = format!("/{}", probe.split('/').filter(|part| !part.is_empty())
         .map(|part| part.split(';').next().unwrap_or("")).collect::<Vec<_>>().join("/"));
     if !normalized.trim_end_matches('/').eq_ignore_ascii_case(PATH) { return Ok(None); }
-    if params["method"].as_str() != Some("POST") || parsed.scheme() != "https"
-        || parsed.query().is_some() || parsed.fragment().is_some() || !parsed.username().is_empty()
-        || parsed.password().is_some() || !ORIGINS.iter().any(|origin| raw == format!("{origin}{PATH}")) {
-        return Err(invalid());
+    if params["method"].as_str() != Some("POST") { return Err(invalid("route:method")); }
+    if parsed.scheme() != "https" || parsed.query().is_some() || parsed.fragment().is_some()
+        || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(invalid("route:url-shape"));
+    }
+    if !ORIGINS.iter().any(|origin| raw == format!("{origin}{PATH}")) {
+        // 命中这两条之一的账号，端点不在 ORIGINS 白名单里。
+        return Err(invalid(if raw.contains("codebuddy") { "route:origin-codebuddy" } else { "route:origin-other" }));
     }
     Ok(Some(raw.to_string()))
 }
 
 fn material(context: &Context, params: &Value, url: String) -> Result<Material, proto::WireError> {
-    let object = params.as_object().ok_or_else(invalid)?;
+    let object = params.as_object().ok_or_else(|| invalid("material:params"))?;
     // `body_resource` 是 SDK `http::open_json_resource` 用的正文通道（分片写资源、
     // 宿主直接取原字节），与普通通道 `wasm/http.rs::body` 同形。上游 workbuddy 包
     // 已经改用这条路径，白名单里少了它会让每次对话都判「材料无效」（2026-11-19 实测）。
     if object.keys().any(|key| !matches!(key.as_str(),
         "method" | "url" | "headers" | "body" | "body_resource" | "timeout_ms" | "id" | "provider" | "proxy" | "trace" | "max_chunk")) {
-        return Err(invalid());
+        return Err(invalid("material:keys"));
     }
     // `provider` / `max_chunk` / `id` 是**旧通道（`body` base64）**的字段：
     // 上游 SDK 的 `http::open_json_resource` 走新通道（`body_resource`）时只发
@@ -299,29 +317,31 @@ fn material(context: &Context, params: &Value, url: String) -> Result<Material, 
     let trace = params.get("trace").and_then(Value::as_str)
         .filter(|trace| trace.len() <= 512 && !trace.chars().any(char::is_control))
         .map(|trace| json!(trace)).unwrap_or(Value::Null);
-    let fields = params["headers"].as_object().filter(|headers| headers.len() <= 128).ok_or_else(invalid)?;
+    let fields = params["headers"].as_object().filter(|headers| headers.len() <= 128)
+        .ok_or_else(|| invalid("material:headers-object"))?;
     let mut headers = HeaderMap::new();
     let mut wire_headers = serde_json::Map::new();
     let mut total = 0usize;
     for (name, value) in fields {
         let lower = name.to_ascii_lowercase();
-        if forbidden_header(&lower) { return Err(invalid()); }
-        let text = value.as_str().ok_or_else(invalid)?;
+        if forbidden_header(&lower) { return Err(invalid("material:header-forbidden")); }
+        let text = value.as_str().ok_or_else(|| invalid("material:header-value-type"))?;
         total = total.checked_add(name.len()).and_then(|bytes| bytes.checked_add(text.len()))
-            .filter(|bytes| *bytes <= MAX_HEADER_BYTES).ok_or_else(invalid)?;
-        let parsed_name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| invalid())?;
-        let mut parsed_value = HeaderValue::from_str(text).map_err(|_| invalid())?;
-        if headers.contains_key(&parsed_name) { return Err(invalid()); }
+            .filter(|bytes| *bytes <= MAX_HEADER_BYTES).ok_or_else(|| invalid("material:header-bytes"))?;
+        let parsed_name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| invalid("material:header-name"))?;
+        let mut parsed_value = HeaderValue::from_str(text).map_err(|_| invalid("material:header-value"))?;
+        if headers.contains_key(&parsed_name) { return Err(invalid("material:header-duplicate")); }
         if lower == "authorization" { parsed_value.set_sensitive(true); }
         headers.insert(parsed_name, parsed_value);
         wire_headers.insert(name.clone(), json!(text));
     }
     let header_is = |name: &str, expected: &str| headers.get(name).and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.eq_ignore_ascii_case(expected));
-    if !header_is("content-type", "application/json") || !header_is("accept", "text/event-stream")
-        || !headers.get("authorization").and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.strip_prefix("Bearer ").is_some_and(|token| !token.is_empty() && !token.chars().any(char::is_whitespace))) {
-        return Err(invalid());
+    if !header_is("content-type", "application/json") { return Err(invalid("material:header-content-type")); }
+    if !header_is("accept", "text/event-stream") { return Err(invalid("material:header-accept")); }
+    if !headers.get("authorization").and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.strip_prefix("Bearer ").is_some_and(|token| !token.is_empty() && !token.chars().any(char::is_whitespace))) {
+        return Err(invalid("material:header-authorization"));
     }
     // 正文两种来源二选一：`body`（base64 文本，旧通道）或 `body_resource`
     // （资源 id，SDK `http::open_json_resource` 用的新通道）。上游 workbuddy 包
@@ -329,7 +349,7 @@ fn material(context: &Context, params: &Value, url: String) -> Result<Material, 
     let encoded = params["body"].as_str().filter(|body| !body.is_empty() && body.len() <= MAX_ENCODED);
     let resource = params.get("body_resource").and_then(Value::as_str).filter(|id| !id.is_empty());
     if encoded.is_some() && resource.is_some() {
-        return Err(invalid());
+        return Err(invalid("material:both-channel"));
     }
     // 旧通道（`body` base64）才要求 provider / max_chunk / id 三项；
     // 新通道（`body_resource`）的 id 由 `body_resource` 自己承载。
@@ -337,19 +357,19 @@ fn material(context: &Context, params: &Value, url: String) -> Result<Material, 
         Some(resource) => resource,
         None => {
             if params["provider"] != PROVIDER || params["max_chunk"].as_u64() != Some(64 * 1024) {
-                return Err(invalid());
+                return Err(invalid("material:legacy-provider"));
             }
             params["id"].as_str().filter(|id| id.starts_with("wasm-") && id.len() <= 80
                 && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)))
-                .ok_or_else(invalid)?
+                .ok_or_else(|| invalid("material:legacy-id"))?
         }
     };
     let bytes = match (encoded, resource) {
         (Some(encoded), None) => {
-            let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| invalid())?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| invalid("material:base64"))?;
             // 往返一致才认：防止 base64 里混进非规范编码（同普通通道的口径）
             if base64::engine::general_purpose::STANDARD.encode(&bytes) != encoded {
-                return Err(invalid());
+                return Err(invalid("material:base64-roundtrip"));
             }
             bytes.into()
         }
@@ -357,18 +377,28 @@ fn material(context: &Context, params: &Value, url: String) -> Result<Material, 
             context.permission("resources.v1")?;
             context.blobs.raw(resource)?
         }
-        _ => return Err(invalid()),
+        _ => return Err(invalid("material:channel")),
     };
     if bytes.is_empty() || bytes.len() > MAX_BODY {
-        return Err(invalid());
+        return Err(invalid("material:body-size"));
     }
     let value: Value = crate::server::core::plugin_host::wasm::managed_task::declaration::parse_object(&bytes, MAX_BODY)
-        .map_err(|_| invalid())?;
+        .map_err(|_| invalid("material:parse"))?;
     let mut nodes = 0;
-    shape(&value, 0, &mut nodes)?;
-    if value["stream"] != true || !value["messages"].as_array().is_some_and(|rows| !rows.is_empty() && rows.len() <= 512)
-        || !value["model"].as_str().is_some_and(|model| !model.trim().is_empty() && model.len() <= 1024 && !model.chars().any(char::is_control)) {
-        return Err(invalid());
+    match shape(&value, 0, &mut nodes) {
+        Ok(()) => {}
+        Err(error) => return Err(error),
+    }
+    if value["stream"] != true { return Err(invalid("material:stream")); }
+    // 条数不设上限（见 MAX_BODY 处的说明）：只要求 messages 存在且非空，
+    // 长度由 MAX_BODY 与 MAX_NODES 共同兜底。
+    match value["messages"].as_array() {
+        None => return Err(invalid("material:messages-missing")),
+        Some(rows) if rows.is_empty() => return Err(invalid("material:messages-empty")),
+        Some(_) => {}
+    }
+    if !value["model"].as_str().is_some_and(|model| !model.trim().is_empty() && model.len() <= 1024 && !model.chars().any(char::is_control)) {
+        return Err(invalid("material:model"));
     }
     let params = json!({ "method": "POST", "url": url, "headers": wire_headers, "id": id,
         "provider": PROVIDER, "trace": trace, "max_chunk": 64 * 1024 });
@@ -376,14 +406,16 @@ fn material(context: &Context, params: &Value, url: String) -> Result<Material, 
 }
 
 fn shape(value: &Value, depth: usize, nodes: &mut usize) -> Result<(), proto::WireError> {
-    *nodes = nodes.checked_add(1).filter(|nodes| *nodes <= MAX_NODES).ok_or_else(invalid)?;
-    if depth > 32 { return Err(invalid()); }
+    *nodes = nodes.checked_add(1).filter(|nodes| *nodes <= MAX_NODES)
+        .ok_or_else(|| invalid("material:shape-nodes"))?;
+    if depth > 32 { return Err(invalid("material:shape-depth")); }
     match value {
         Value::Array(items) => for item in items { shape(item, depth + 1, nodes)?; },
         Value::Object(fields) => {
             let mut names = BTreeSet::new();
             for (key, item) in fields {
-                if key.len() > 1024 || !names.insert(key) { return Err(invalid()); }
+                if key.len() > 1024 { return Err(invalid("material:shape-key-length")); }
+                if !names.insert(key) { return Err(invalid("material:shape-key-duplicate")); }
                 shape(item, depth + 1, nodes)?;
             }
         }
@@ -399,8 +431,13 @@ fn forbidden_header(name: &str) -> bool {
         | "x-method-override" | "http-method-override" | "x-original-method") || name.starts_with("x-forwarded-")
 }
 
-fn invalid() -> proto::WireError {
-    proto::WireError::with_code("WorkBuddy国内固定对话材料无效，未换域、读取资源或回退普通HTTP", "bad_params")
+fn invalid(tag: &'static str) -> proto::WireError {
+    // tag 只用于定位「哪一条判定拒的」：文案会经插件透传到面板。
+    // 同一个来源（`bad_params`）下有二十几个判定点，不带 tag 时从日志与面板
+    // 完全分不出来是哪一条（2026-11-19 排查 400 时踩过）。
+    proto::WireError::with_code(
+        format!("WorkBuddy国内固定对话材料无效[{tag}]，未换域、读取资源或回退普通HTTP"),
+        "bad_params")
 }
 
 fn unavailable() -> proto::WireError {

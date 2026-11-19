@@ -73,8 +73,18 @@ fn effective(settings: &CapacitySettings, resources: monitor::Resources) -> Limi
     let memory_bytes = if settings.memory_mib == 0 { auto_memory.max(16 * MIB) }
         else { settings.memory_mib.saturating_mul(MIB).min((resources.total_bytes * 3 / 4) as usize).max(16 * MIB) };
     let process_ceiling = resources.total_bytes.saturating_mul(4) / 5;
-    let memory_pressure = resources.available_bytes < resources.total_bytes / 10
-        || resources.container_bytes.unwrap_or(resources.process_bytes) >= process_ceiling;
+    // 只看**本进程**自己的占用，不看整机可用内存。
+    //
+    // 原先还有一条 `available_bytes < total_bytes / 10`：整机可用内存低于 10%
+    // 就算「内存压力」，而 `queue::allowed` 对压力态是**无条件拒绝**所有对话/
+    // 图片/后台/请求类 —— 于是浏览器、编译器、别的工具一吃内存，网关明明只占
+    // 200 MiB 也会把全部请求拒掉（2026-11-20 实测：编 release 时 rustc 吃 4 GB，
+    // 那 20 分钟里网关所有对话都是 503 `gateway_busy`）。
+    // 整机内存紧张是操作系统的调度问题，网关只为自己进程的占用负责；
+    // 真正的内存闸门是 `MemoryBudget` 的总预算（默认整机一半），它按实际分配
+    // 累加、超了就拒绝分配，不需要靠整机可用内存再拦一道。
+    // beta.1 没有这套准入，去掉这一条即恢复「自己的事自己管」的口径。
+    let memory_pressure = resources.container_bytes.unwrap_or(resources.process_bytes) >= process_ceiling;
     let cpu_pressure = resources.cpu_percent >= 90.0;
     let automatic = settings.mode == CapacityMode::Auto;
     let conversations = if automatic {

@@ -11,7 +11,11 @@ pub(super) const SOURCE: &str = "CatX";
 pub(super) const MODE: &str = "CATX_APP";
 pub(super) const PERMISSION: &str = "unsafeBypassPermissions";
 pub(super) const TOOL_VERSION: &str = "2.0.2";
-pub(super) const MAX_MESSAGES: usize = 512;
+// 客户端声明的 `message_count` 上界。它是一条声明值（不是实际数组），用于范围
+// 校验，所以保留一个上界；原先 512 与 `catpaw_material` 的数组条数闸门同源，
+// 两处都会在大上下文时误拒。这里放宽到 4096（与 observation 同量级），实际
+// 内存仍由 MAX_BODY / MAX_NODES 兜底（2026-11-19）。
+pub(super) const MAX_MESSAGES: usize = 4096;
 const MAX_DIRECTIVES: usize = 2 * 1024 * 1024;
 
 pub(super) struct PreparedInput {
