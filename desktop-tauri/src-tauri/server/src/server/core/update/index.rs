@@ -21,7 +21,7 @@ const TRUSTED_KEY: &str = "updateWebsiteTrustedApp";
 /// 2. tag 能按语义化版本解析（`v3.5.0-beta.1` 这种），`ziyong-20261108.2`
 ///    那样的日期序号解析不出来，会被跳过；
 /// 3. 资产名形如 `Agent2API_<版本>_x64-setup.exe`（安装包的既有命名）。
-const APP_REPO: &str = "wocaoniubi123/Agent2API";
+const APP_REPO: &str = "aimod-cc/Agent2API";
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]

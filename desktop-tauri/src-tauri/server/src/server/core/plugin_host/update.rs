@@ -22,61 +22,31 @@ pub const FALLBACK_REPO: &str = "Agent2Builder/agent2api-providers-releases";
 ///
 /// ⚠️ **这张表是总开关**：命中即同时失去四项保护 —— 验签、官网路径校验、
 /// 自动更新的「已签名」门槛、下载阶段的 SHA-256 之外的那道官网守卫。
-/// **只放本 fork 自己编译的插件 id**，别把官网插件 id 加进来
-/// （2026-11-19 独立复核 P3-5）。
-/// 只列**单包**的自编插件；Wasm 拆包后的几十个 `agent2api-wasm-*` 走
-/// [`WASM_REPO`] 的前缀认领，不往这张表里堆。
-pub const CUSTOM_REPOS: &[(&str, &str)] = &[("agent2api-providers", "wocaoniubi123/Agent2Providers")];
-
-/// Wasm 插件的发布仓库（`agent2api-wasm-*` 全部落在这里）。
+/// 自建仓库的插件 id → GitHub 仓库映射。
 ///
-/// beta.2 起上游把提供商插件按「一家一个包」拆成 Wasm 包：包 id 形如
-/// `agent2api-wasm-<provider>`、tag 形如 `wasm-<provider>-v<version>`
-/// （见上游 `.github/workflows/wasm-build.yml` 的 `wasm-*-v*` 触发，
-/// 以及它校验 tag 的正则 `^wasm-([a-z][a-z0-9-]*)-v(...)$`）。
+/// **本 fork 已全部改回上游官方源**：官方索引走 [`INDEX_SOURCE`]
+/// （`https://agent2api.dev/api/plugins`），索引读不到时兜底走
+/// [`FALLBACK_REPO`]（上游的 `Agent2Builder/agent2api-providers-releases`）。
 ///
-/// 分家之后一个仓库里会有几十个包：逐个写进 `CUSTOM_REPOS` 既啰嗦又容易漏，
-/// 所以按前缀整段认领 —— 只要 id 是 `agent2api-wasm-<合法后缀>`，就认定是
-/// 我们自己发布的包。
-pub const WASM_REPO: &str = "wocaoniubi123/Agent2Providers";
-
-/// Wasm 插件包 id 的前缀（`agent2api-wasm-<provider>`）。
-pub const WASM_ID_PREFIX: &str = "agent2api-wasm-";
-
-/// 自建包 id 的合法后缀：小写字母、数字、连字符（与 `query_releases` 的
-/// 标识校验、`catalog` 的索引项校验同一口径）。
-fn valid_custom_suffix(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-}
+/// 这张表留空是刻意的：上游 40 个 Wasm 包（含 `agent2api-wasm-*`）都由上游自己
+/// 发布，本 fork 不再自建发布仓库。将来若真要自建，往这里加 `(id, "owner/repo")`
+/// 即可，`custom_source` / `is_custom_repo` 会重新识别。
+pub const CUSTOM_REPOS: &[(&str, &str)] = &[];
 
 /// 命中自建仓库时返回「发布仓库 + tag 模板」，官网插件返回 `None`。
 ///
 /// tag 模板与官网 `PluginDetail::tag_template` 同形（带 `{version}` 占位），
-/// 调用方拿它去 `release_version` 里拆 tag。**上游 Wasm 包的 tag 是
-/// `wasm-<provider>-v<version>`，用官网默认的 `v{version}` 解不出来**
-/// —— 这正是本函数存在的理由：自定义仓库拿不到 `PluginDetail`，
-/// 模板只能自己按 id 推。
+/// 调用方拿它去 `release_version` 里拆 tag。
 pub fn custom_source(id: &str) -> Option<(&'static str, String)> {
-    if let Some((_, repo)) = CUSTOM_REPOS.iter().find(|(custom, _)| *custom == id) {
-        return Some((repo, "v{version}".to_string()));
-    }
-    let provider = id.strip_prefix(WASM_ID_PREFIX)?;
-    if !valid_custom_suffix(provider) {
-        return None;
-    }
-    Some((WASM_REPO, format!("wasm-{provider}-v{{version}}")))
+    CUSTOM_REPOS
+        .iter()
+        .find(|(custom, _)| *custom == id)
+        .map(|(_, repo)| (*repo, "v{version}".to_string()))
 }
 
 /// 这个插件 id 是不是走自建仓库（命中即改查 GitHub Releases + 豁免签名校验）。
 pub fn is_custom_repo(id: &str) -> bool {
     CUSTOM_REPOS.iter().any(|(custom, _)| *custom == id)
-        || id
-            .strip_prefix(WASM_ID_PREFIX)
-            .is_some_and(valid_custom_suffix)
 }
 
 /// 自建仓库的 Release 查询仍走 GitHub API。
@@ -757,79 +727,44 @@ mod tests {
         assert_eq!(asset.version, "1.2.3");
     }
 
-    // ── 路线 B：wasm 包的 id 前缀认领与 per-包 tag 模板 ──────────────
+    // ── wasm 目录的 tag 模板 ──────────────────────────────────────
     //
-    // 上游 beta.2 把提供商插件拆成「一家一个 wasm 包」：包 id 形如
-    // `agent2api-wasm-<provider>`、tag 形如 `wasm-<provider>-v<version>`。
-    // 下面几个测试锁住这条链路的三个环节，改任一环节都会红。
-
-    /// 单包仍走 `CUSTOM_REPOS`，模板是默认的 `v{version}`。
-    #[test]
-    fn custom_source_keeps_the_single_pack_default_template() {
-        let (repo, template) = custom_source("agent2api-providers").expect("单包应当命中");
-        assert_eq!(repo, "wocaoniubi123/Agent2Providers");
-        assert_eq!(template, "v{version}");
-    }
-
-    /// `agent2api-wasm-*` 按前缀整段认领，并为每家推算自己的 tag 模板。
-    #[test]
-    fn custom_source_claims_wasm_prefix_with_per_pack_template() {
-        for provider in ["raccoon", "workbuddy", "atomcode", "cline-free"] {
-            let id = format!("agent2api-wasm-{provider}");
-            let (repo, template) = custom_source(&id).expect("wasm 包应当命中");
-            assert_eq!(repo, WASM_REPO);
-            assert_eq!(template, format!("wasm-{provider}-v{{version}}"));
-        }
-    }
-
-    /// 官网插件 id 与形态不合法的 id 都不能被误认成自建。
-    #[test]
-    fn custom_source_rejects_official_and_malformed_ids() {
-        for id in [
-            "warp",                       // 官网包
-            "agent2api-wasm-",            // 前缀后为空
-            "agent2api-wasm-Bad",         // 大写
-            "agent2api-wasm-has_underscore",
-            "agent2api-providers-extra",  // 只是前缀相似
-        ] {
-            assert!(custom_source(id).is_none(), "{id} 不该命中");
-            assert!(!is_custom_repo(id), "{id} 不该判成自建仓库");
-        }
-        assert!(is_custom_repo("agent2api-wasm-raccoon"));
-        assert!(is_custom_repo("agent2api-providers"));
-    }
+    // 上游 beta.2 把提供商插件拆成「一家一个 wasm 包」：tag 形如
+    // `wasm-<provider>-v<version>`。**本 fork 已改回官方源**（`CUSTOM_REPOS`
+    // 留空），模板由官网 `PluginDetail::tag_template` 提供；下面两个测试锁的是
+    // 「模板怎么解析 tag」与「`pick_release_assets` 怎么用模板挑资产」，
+    // 与源无关，改源不会影响它们。
 
     /// wasm 目录的 tag 只有配上 per-包模板才解得出版本号。
     #[test]
     fn wasm_tag_needs_its_own_template() {
         let tag = json!({ "tag_name": "wasm-atomcode-v0.1.0-beta.1" });
-        // 默认模板（官网那条）解不出来 —— 这正是 custom_source 存在的理由
+        // 官网默认模板（`v{version}`）解不出 wasm 目录的 tag
         assert!(release_version(&tag, "v{version}").is_none());
-        // 推算出来的模板能解
+        // 上游给的正确模板能解
         assert_eq!(
             release_version(&tag, "wasm-atomcode-v{version}").as_deref(),
             Some("0.1.0-beta.1")
         );
     }
 
-    /// 端到端：上游 wasm 目录的 tag + 资产名，能被完整挑中。
+    /// `pick_release_assets` 接受调用方传进来的 tag 模板（对应官网 `PluginDetail`）。
     #[test]
-    fn picks_wasm_asset_with_per_pack_template() {
+    fn picks_wasm_asset_with_explicit_tag_template() {
         let release = json!({
             "tag_name": "wasm-raccoon-v0.1.0",
-            "html_url": "https://github.com/wocaoniubi123/Agent2Providers/releases/tag/wasm-raccoon-v0.1.0",
+            "html_url": "https://example.com/releases/tag/wasm-raccoon-v0.1.0",
             "prerelease": false,
             "assets": [
                 { "name": "agent2api-wasm-raccoon-0.1.0-wasm32-unknown-unknown.zip",
-                  "browser_download_url": "https://github.com/wocaoniubi123/Agent2Providers/releases/download/wasm-raccoon-v0.1.0/agent2api-wasm-raccoon-0.1.0-wasm32-unknown-unknown.zip",
-                  "size": 168474 },
+                  "browser_download_url": "https://example.com/raccoon.zip", "size": 168474 },
                 { "name": "agent2api-wasm-raccoon-0.1.0-x86_64-pc-windows-msvc.zip",
                   "browser_download_url": "https://example.com/stale.zip", "size": 1 }
             ]
         });
         let id = "agent2api-wasm-raccoon";
-        let (_, template) = custom_source(id).expect("应当命中");
-        let assets = pick_release_assets(&release, id, None, Some(template.as_str()))
+        // 模板由调用方传入 —— 官网 `PluginDetail::tag_template` 就是这条路
+        let assets = pick_release_assets(&release, id, None, Some("wasm-raccoon-v{version}"))
             .expect("应当挑到 wasm 平台包");
         assert_eq!(assets.version, "0.1.0");
         let (target, url, size) = assets.platforms.first().expect("应当有平台");
@@ -838,6 +773,20 @@ mod tests {
             crate::server::core::plugin_host::wasm::manifest::TARGET
         );
         assert_eq!(size, &168_474);
-        assert!(url.ends_with("agent2api-wasm-raccoon-0.1.0-wasm32-unknown-unknown.zip"));
+        assert_eq!(url, "https://example.com/raccoon.zip");
+    }
+
+    /// 本 fork 改回官方源后，任何 id 都不再被认成「自建仓库」。
+    #[test]
+    fn no_custom_repos_after_reverting_to_official_source() {
+        for id in [
+            "agent2api-providers",
+            "agent2api-wasm-raccoon",
+            "agent2api-wasm-workbuddy",
+            "warp",
+        ] {
+            assert!(custom_source(id).is_none(), "{id} 不该命中自建源");
+            assert!(!is_custom_repo(id), "{id} 不该判成自建仓库");
+        }
     }
 }

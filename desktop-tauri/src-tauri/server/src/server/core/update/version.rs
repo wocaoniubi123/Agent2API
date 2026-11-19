@@ -23,11 +23,10 @@ use crate::server::config::UpdateChannels;
 /// 自己的仓库：安装包由本地 `tauri-build` 产出、再用 `gh release create` 上传，
 /// 不再依赖上游那个构建仓库。
 ///
-/// 只影响「索引读不到」时的兜底：正常路径走官网（`website::API_BASE`），
-/// 命中 `plugin_host::update::CUSTOM_REPOS` 的插件另走自己的仓库。
+/// 只影响「索引读不到」时的兜底：正常路径走官网（`website::API_BASE`）。
 ///
 /// `WORKBUDDY_UPDATE_REPO` 环境变量仍可覆盖（最高优先级，且不读索引）。
-pub const DEFAULT_REPO: &str = "wocaoniubi123/Agent2API";
+pub const DEFAULT_REPO: &str = "aimod-cc/Agent2API";
 
 /// 项目主页与开源链接不属于更新来源。
 pub const SOURCE_REPO: &str = "aimod-cc/Agent2API";

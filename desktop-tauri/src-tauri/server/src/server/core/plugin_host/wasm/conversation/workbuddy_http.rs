@@ -167,7 +167,7 @@ fn prepare(context: &Context, params: &Value, deadline: script::HttpDeadline) ->
         crate::server::config::timeout_settings().headers_ms().clamp(1000, 600_000)));
     headers_deadline.check()?;
     deadline.check()?;
-    let material = material(params, url)?;
+    let material = material(context, params, url)?;
     let call = context.conversation.as_ref().ok_or_else(unavailable)?;
     let cancel = context.sink.as_ref().ok_or_else(unavailable)?.cancel.clone();
     if call.provider != PROVIDER || call.account.is_empty() || call.account != context.account
@@ -275,10 +275,13 @@ fn route(context: &Context, params: &Value) -> Result<Option<String>, proto::Wir
     Ok(Some(raw.to_string()))
 }
 
-fn material(params: &Value, url: String) -> Result<Material, proto::WireError> {
+fn material(context: &Context, params: &Value, url: String) -> Result<Material, proto::WireError> {
     let object = params.as_object().ok_or_else(invalid)?;
+    // `body_resource` 是 SDK `http::open_json_resource` 用的正文通道（分片写资源、
+    // 宿主直接取原字节），与普通通道 `wasm/http.rs::body` 同形。上游 workbuddy 包
+    // 已经改用这条路径，白名单里少了它会让每次对话都判「材料无效」（2026-11-19 实测）。
     if object.keys().any(|key| !matches!(key.as_str(),
-        "method" | "url" | "headers" | "body" | "timeout_ms" | "id" | "provider" | "proxy" | "trace" | "max_chunk")) {
+        "method" | "url" | "headers" | "body" | "body_resource" | "timeout_ms" | "id" | "provider" | "proxy" | "trace" | "max_chunk")) {
         return Err(invalid());
     }
     if params["provider"] != PROVIDER || params["max_chunk"].as_u64() != Some(64 * 1024) { return Err(invalid()); }
@@ -311,9 +314,30 @@ fn material(params: &Value, url: String) -> Result<Material, proto::WireError> {
             .is_some_and(|value| value.strip_prefix("Bearer ").is_some_and(|token| !token.is_empty() && !token.chars().any(char::is_whitespace))) {
         return Err(invalid());
     }
-    let encoded = params["body"].as_str().filter(|body| !body.is_empty() && body.len() <= MAX_ENCODED).ok_or_else(invalid)?;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| invalid())?;
-    if bytes.is_empty() || bytes.len() > MAX_BODY || base64::engine::general_purpose::STANDARD.encode(&bytes) != encoded {
+    // 正文两种来源二选一：`body`（base64 文本，旧通道）或 `body_resource`
+    // （资源 id，SDK `http::open_json_resource` 用的新通道）。上游 workbuddy 包
+    // 已改用后者，宿主必须两条都认，否则每次对话都判「材料无效」。
+    let encoded = params["body"].as_str().filter(|body| !body.is_empty() && body.len() <= MAX_ENCODED);
+    let resource = params.get("body_resource").and_then(Value::as_str).filter(|id| !id.is_empty());
+    if encoded.is_some() && resource.is_some() {
+        return Err(invalid());
+    }
+    let bytes = match (encoded, resource) {
+        (Some(encoded), None) => {
+            let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| invalid())?;
+            // 往返一致才认：防止 base64 里混进非规范编码（同普通通道的口径）
+            if base64::engine::general_purpose::STANDARD.encode(&bytes) != encoded {
+                return Err(invalid());
+            }
+            bytes.into()
+        }
+        (None, Some(resource)) => {
+            context.permission("resources.v1")?;
+            context.blobs.raw(resource)?
+        }
+        _ => return Err(invalid()),
+    };
+    if bytes.is_empty() || bytes.len() > MAX_BODY {
         return Err(invalid());
     }
     let value: Value = crate::server::core::plugin_host::wasm::managed_task::declaration::parse_object(&bytes, MAX_BODY)
