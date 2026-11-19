@@ -26,8 +26,14 @@ use super::super::{ConversationEgress, EndState, Signal};
 
 const PROVIDER: &str = "workbuddy";
 const PATH: &str = "/v2/chat/completions";
-const ORIGINS: [&str; 3] = [
+/// 官方国内入口集合。`www.codebuddy.cn` 是插件 `endpoints::BILL` 常量、也是
+/// `endpoints::endpoint()` 明确接受的四种账号端点之一：从 codebuddy.cn 网页
+/// 会话导入的账号，`secret.endpoint` 就是这个域，`chat.rs` 直接拿它拼对话 URL。
+/// 白名单里少了它，这类账号每次对话都在 `route()` 判「材料无效」→ 400
+/// （2026-11-19 实测：同一模型下 workbuddy.cn 的号 200、codebuddy.cn 的号 400）。
+const ORIGINS: [&str; 4] = [
     "https://www.workbuddy.cn", "https://copilot.tencent.com", "https://wb.tencentbuddy.com",
+    "https://www.codebuddy.cn",
 ];
 const MAX_BODY: usize = 8 * 1024 * 1024;
 const MAX_ENCODED: usize = ((MAX_BODY + 2) / 3) * 4;
@@ -284,9 +290,12 @@ fn material(context: &Context, params: &Value, url: String) -> Result<Material, 
         "method" | "url" | "headers" | "body" | "body_resource" | "timeout_ms" | "id" | "provider" | "proxy" | "trace" | "max_chunk")) {
         return Err(invalid());
     }
-    if params["provider"] != PROVIDER || params["max_chunk"].as_u64() != Some(64 * 1024) { return Err(invalid()); }
-    let id = params["id"].as_str().filter(|id| id.starts_with("wasm-") && id.len() <= 80
-        && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))).ok_or_else(invalid)?;
+    // `provider` / `max_chunk` / `id` 是**旧通道（`body` base64）**的字段：
+    // 上游 SDK 的 `http::open_json_resource` 走新通道（`body_resource`）时只发
+    // method/url/headers/body_resource 四个键（见 `wasm/sdk/src/http.rs` 的
+    // `resource_params`），这三个字段必然为 null。校验挪到下面「选定通道之后」，
+    // 只对旧通道生效 —— 否则每一次上游 workbuddy 对话都会判「材料无效」
+    // （2026-11-19 实测：b72f882 引入新通道时上游漏改宿主侧这一处）。
     let trace = params.get("trace").and_then(Value::as_str)
         .filter(|trace| trace.len() <= 512 && !trace.chars().any(char::is_control))
         .map(|trace| json!(trace)).unwrap_or(Value::Null);
@@ -322,6 +331,19 @@ fn material(context: &Context, params: &Value, url: String) -> Result<Material, 
     if encoded.is_some() && resource.is_some() {
         return Err(invalid());
     }
+    // 旧通道（`body` base64）才要求 provider / max_chunk / id 三项；
+    // 新通道（`body_resource`）的 id 由 `body_resource` 自己承载。
+    let id = match resource {
+        Some(resource) => resource,
+        None => {
+            if params["provider"] != PROVIDER || params["max_chunk"].as_u64() != Some(64 * 1024) {
+                return Err(invalid());
+            }
+            params["id"].as_str().filter(|id| id.starts_with("wasm-") && id.len() <= 80
+                && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)))
+                .ok_or_else(invalid)?
+        }
+    };
     let bytes = match (encoded, resource) {
         (Some(encoded), None) => {
             let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| invalid())?;
