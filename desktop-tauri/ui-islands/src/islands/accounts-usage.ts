@@ -129,10 +129,18 @@ async function readBalancesSnapshot(): Promise<boolean> {
   try {
     const revision = usageTaskRevision()
     const dialog = getStore().dialog
-    const scope = shared().wbApp?.getState?.()?.accounts?.indexOnly
+    const narrowed = shared().wbApp?.getState?.()?.accounts?.indexOnly
       ? [...new Set([...getStore().visibleUsageIds, ...getStore().usageInflight,
         ...(dialog?.kind === 'settings' ? [dialog.id] : [])])]
       : undefined
+    // 收窄后为空就退回全量。索引模式下 scope 只取「当前可见账号」，而账号列表
+    // 默认是收起的分组——一个都没展开时 scope 是空数组，`getBalancesSnapshot([])`
+    // 返回 0 条，applyBalances 什么都不写，queryRows / usageMap 保持空，
+    // 于是所有依赖余额缓存的视图都失效：「今日积分」恒为 0 条、余额列显示
+    // 「还没有查询过余额」（2026-11-20 在运行中的面板上实测：空 ids 返回 0 条，
+    // 无参返回 73 条）。这个接口只读 account_usage_records 表，
+    // 两种调用都不触发官方上游查询，所以退回全量不多打上游、也不多一次往返。
+    const scope = Array.isArray(narrowed) && narrowed.length === 0 ? undefined : narrowed
     const data = await usageQueryDeadline(Promise.resolve(shared().workbuddyDesktop?.getBalancesSnapshot?.(scope)), 5000)
     if (revision !== usageTaskRevision()) return false
     // Token 消耗独立于余额查询变化，不能被余额的时间戳早退挡住。
