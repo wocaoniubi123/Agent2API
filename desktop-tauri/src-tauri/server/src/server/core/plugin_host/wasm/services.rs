@@ -7,6 +7,17 @@ use super::super::script;
 
 fn text<'a>(value: &'a Value, key: &str) -> &'a str { value[key].as_str().unwrap_or("") }
 
+/// 业务 API 调用上限（**不含** `http.read`）。
+///
+/// 这一项防的是插件死循环里反复调宿主接口，本来就不该把「读回复正文」算进来。
+const MAX_CALLS: u32 = 100_000;
+
+/// `http.read` 的上限。数据面读取按字节推进，长回复必然读很多次：
+/// 实测一次 128 秒的流式对话读完 15.8 MB 用了 10 万次（平均每次 154 字节）。
+/// 把它压在和业务调用同一个 10 万上限里，等于按回复长度惩罚插件——那次就是
+/// 撞上限后整条流被打断、客户端对话直接终止。
+const MAX_READ_CALLS: u32 = 1_000_000;
+
 impl Context {
     pub(super) fn permission(&self, name: &str) -> Result<(), proto::WireError> {
         if self.shared.options.allows(name) { Ok(()) }
@@ -49,7 +60,16 @@ impl Context {
             }
         }
         self.calls += 1;
-        if self.calls > 100_000 { return Err(proto::WireError::with_code("插件调用次数超出上限", "plugin_resource_limit")); }
+        // 数据面读取与业务调用分开配额：`http.read` 只受 `MAX_READ_CALLS`，
+        // 业务调用按 `calls - reads` 计（read 也累加 `calls`，便于整体观察）。
+        if method == "http.read" {
+            self.reads = self.reads.saturating_add(1);
+            if self.reads > MAX_READ_CALLS {
+                return Err(proto::WireError::with_code("插件读取调用次数超出上限", "plugin_resource_limit"));
+            }
+        } else if self.calls.saturating_sub(self.reads) > MAX_CALLS {
+            return Err(proto::WireError::with_code("插件调用次数超出上限", "plugin_resource_limit"));
+        }
         if method != "clock.now" && !params.is_object() { return Err(super::error("插件能力参数必须是 JSON 对象")); }
         // started 由 ABI 入口在解码前记录；权限、账号读取及正文准备不能另起计时。
         let opening = matches!(method, "http.open" | "http.open_account");

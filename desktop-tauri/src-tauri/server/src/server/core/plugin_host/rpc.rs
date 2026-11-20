@@ -455,6 +455,10 @@ pub(super) fn rpc_error(provider: &str, error: proto::WireError, method: &str) -
             "Wasm 插件内存超限" => "Wasm 插件内存超限",
             "Wasm 插件表容量超限" => "Wasm 插件表容量超限",
             "Wasm 插件共享内存预算超限" => "Wasm 插件共享内存预算超限",
+            // 次数类要单独说清：原先落进兜底文案「资源已达上限」，用户会去查内存和额度，
+            // 而真实原因是长回复把读取次数顶到了上限（2026-11-20 一次 128 秒的流式对话）。
+            "插件调用次数超出上限" => "插件调用次数超出上限（本轮对话调用过多，可重试）",
+            "插件读取调用次数超出上限" => "插件读取调用次数超出上限（单次回复过长或读取过碎，可重试）",
             _ => "插件运行资源已达上限，未继续处理请求",
         };
         return GatewayError::with_status(503, message).with_code("plugin_resource_limit");

@@ -42,6 +42,9 @@ impl Invocation {
         snapshot["upstreamPayloadBytes"] = json!(context.progress.upstream_bytes());
         snapshot["outputBytes"] = json!(context.progress.output_bytes());
         snapshot["hostCalls"] = json!(context.calls);
+        // 其中数据面读取的次数：长回复会把它顶得很高，但要和业务调用分开看，
+        // 否则只看 hostCalls 会误以为插件在死循环调 API。
+        snapshot["readCalls"] = json!(context.reads);
         snapshot["memoryBytes"] = json!(limits.linear_bytes);
         snapshot["memoryLimitBytes"] = json!(context.shared.options.manifest.memory_mib * 1024 * 1024);
         snapshot["tableBytes"] = json!(limits.table_bytes);

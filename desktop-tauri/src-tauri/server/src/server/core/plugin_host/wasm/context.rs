@@ -119,6 +119,12 @@ pub struct Context {
     pub(super) progress: super::progress::Progress,
     pub guards: HashMap<String, OwnedMutexGuard<()>>,
     pub calls: u32,
+    /// 其中属于 `http.read`（数据面读取）的次数。
+    ///
+    /// 单列是因为长回复必然要读很多次：实测一次 128 秒的流式对话读 10 万次才
+    /// 读完 15.8 MB（平均每次 154 字节）。把它和业务 API 调用放在同一个 10 万
+    /// 上限里，等于按回复长度惩罚插件——那次就是撞上限后整条流被打断。
+    pub reads: u32,
 }
 
 impl Context {
@@ -137,7 +143,7 @@ impl Context {
             proxy_selected: params.get("proxy").is_some(), system_proxy_when_unset, user_agent: None,
             trace: params.get("plugin_trace").cloned().unwrap_or(Value::Null),
             sink, head_sent: false, resources: HashMap::new(), http_handles: HashMap::new(), converters: HashMap::new(),
-            blobs: Default::default(), progress: Default::default(), guards: HashMap::new(), calls: 0,
+            blobs: Default::default(), progress: Default::default(), guards: HashMap::new(), calls: 0, reads: 0,
         }
     }
 }
