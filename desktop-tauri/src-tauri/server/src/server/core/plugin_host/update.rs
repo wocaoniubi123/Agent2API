@@ -162,8 +162,8 @@ pub fn clear_cooldown() {
 }
 
 pub async fn read_index_result() -> Result<Vec<IndexEntry>, UpdateError> {
-    let url = format!("{INDEX_SOURCE}/index.json");
-    let response = website::fetch_json(&url, QUERY_TIMEOUT_MS).await?;
+    let fallback_url = format!("{INDEX_SOURCE}/index.json");
+    let response = website::fetch_json_with_fallback(website::CDN_PLUGIN_CATALOG_URL, &fallback_url, QUERY_TIMEOUT_MS).await?;
     if !response.status.is_success() {
         return Err(UpdateError::new(format!(
             "读取插件索引失败：HTTP {}",
@@ -190,16 +190,20 @@ pub async fn read_index_result() -> Result<Vec<IndexEntry>, UpdateError> {
                 return None;
             }
             let name = text(item, "name");
+            let manifest = text(item, "manifest");
             Some(IndexEntry {
                 name: if name.is_empty() { id.clone() } else { name },
+                manifest: if manifest.is_empty() { format!("{id}/manifest.json") } else { manifest },
                 id,
                 description: text(item, "description"),
                 require_signed,
-                manifest: text(item, "manifest"),
                 icon: text(item, "icon"),
                 repo: item
-                    .get("source")
-                    .map(|source| text(source, "repo"))
+                    .get("detail")
+                    .and_then(|detail| detail.get("release"))
+                    .map(|release| text(release, "repo"))
+                    .filter(|repo| !repo.is_empty())
+                    .or_else(|| item.get("source").map(|source| text(source, "repo")))
                     .unwrap_or_default(),
             })
         })
@@ -250,7 +254,8 @@ pub async fn read_detail(path: &str) -> Option<PluginDetail> {
 }
 
 pub async fn read_store_icon(path: &str) -> Option<String> {
-    if !path.starts_with("/plugin-assets/") && !path.starts_with("/api/media/") { return None; }
+    let is_cdn = path.starts_with("https://cdn.agent2api.dev/advertisements/");
+    if !is_cdn && !path.starts_with("/plugin-assets/") && !path.starts_with("/api/media/") { return None; }
     if path.contains("..") || path.contains(['?', '#', '\\']) { return None; }
     let mime = match path.rsplit('.').next()?.to_ascii_lowercase().as_str() {
         "png" => "image/png",
@@ -259,7 +264,8 @@ pub async fn read_store_icon(path: &str) -> Option<String> {
         "svg" if path.starts_with("/plugin-assets/") => "image/svg+xml",
         _ => return None,
     };
-    let bytes = website::fetch_bytes(&format!("{}{path}", website::ORIGIN), 2 * 1024 * 1024).await.ok()?;
+    let target = if is_cdn { path.to_string() } else { format!("{}{path}", website::ORIGIN) };
+    let bytes = website::fetch_bytes(&target, 2 * 1024 * 1024).await.ok()?;
     if bytes.len() > 2 * 1024 * 1024 {
         return None;
     }
@@ -382,7 +388,7 @@ pub(super) async fn release_for_channels(
     if !valid_repo(repo) {
         return Err(UpdateError::new("插件发布仓库必须是 owner/repo"));
     }
-    // 自建仓库拿不到 `PluginDetail`，tag 模板只能按 id 自己推（见 `custom_source`）。
+    // 自用 fork：自建仓库拿不到 `PluginDetail`，tag 模板只能按 id 自己推（见 `custom_source`）。
     // Wasm 包的 tag 是 `wasm-<provider>-v<version>`：`/latest` 只回整个仓库最新的
     // 那一条 Release，几十个包混在一个仓库里必然张冠李戴 —— 所以标签模板不是默认值
     // 时必须翻列表，由下面的 `pick_release_assets` 按各自模板逐条认领。
@@ -391,6 +397,53 @@ pub(super) async fn release_for_channels(
         .as_ref()
         .map(|(_, tag)| tag.as_str())
         .or_else(|| detail.map(|detail| detail.tag_template.as_str()));
+    // 上游：自建仓库之外的包，先查 CDN 分发源的插件目录（含多条 release）。
+    // **自建仓库优先**：否则本 fork 的自建包会被官网目录里的同名条目抢走，
+    // 而那边强制 `require_signed`，自编包永远装不上。
+    if custom.is_none() {
+        if let Ok(feed) = website::fetch_json(website::CDN_PLUGIN_CATALOG_URL, QUERY_TIMEOUT_MS).await {
+            if feed.status.is_success() && feed.value["schema"] == 1 {
+                if let Some(entries) = feed.value["plugins"].as_array() {
+                    let mut best: Option<ReleaseAssets> = None;
+                    let mut matched_plugin = false;
+                    for entry in entries.iter().filter(|item| item["id"].as_str() == Some(id)) {
+                        matched_plugin = true;
+                        let items: Vec<&Value> = entry["releases"]
+                            .as_array()
+                            .map(|list| list.iter().collect())
+                            .unwrap_or_else(|| vec![&entry["release"]]);
+                        for release in items {
+                            if release.is_null() || release.get("draft").and_then(Value::as_bool) == Some(true) {
+                                continue;
+                            }
+                            let Some(mut assets) = pick_release_assets(release, id, detail, None) else { continue; };
+                            validate_release_urls(release, &assets, id)?;
+                            assets.require_signed = true;
+                            if !channels.accepts(assets.prerelease) { continue; }
+                            if current.is_some()
+                                && !assets
+                                    .platforms
+                                    .iter()
+                                    .any(|(target, _, _)| *target == super::host_target() || target == super::wasm::manifest::TARGET)
+                            {
+                                continue;
+                            }
+                            if best
+                                .as_ref()
+                                .map(|item| compare_versions(&assets.version, &item.version) == Some(1))
+                                .unwrap_or(true)
+                            {
+                                best = Some(assets);
+                            }
+                        }
+                    }
+                    if matched_plugin {
+                        return Ok(best);
+                    }
+                }
+            }
+        }
+    }
     let listed = channels.beta || tag_template.is_some_and(|tag| tag != "v{version}");
     let response = match query_releases(
         id,
@@ -546,11 +599,14 @@ pub async fn download(
     });
     let custom = pack_id.as_deref().is_some_and(is_custom_repo);
 
-    // 官网守卫：**只对官网插件生效**。自建仓库的资产在 GitHub，路径不可能落在
-    // `/downloads/plugins/` 下，不跳过这道守卫的话自建仓库永远下不到包
-    // （2026-11-19 合并复核时发现）。
+    // 官网守卫：**只对官网与上游 CDN 的插件生效**。自建仓库的资产在 GitHub，路径不可能
+    // 落在 `/downloads/plugins/` 或 CDN 的 `/agent2api/plugins/` 下，不跳过这道守卫的话
+    // 自建仓库永远下不到包（2026-11-19 合并复核时发现）。
     if !custom && (!website::trusted_url(&asset.url) || !url::Url::parse(&asset.url).is_ok_and(|url| {
-        url.path().starts_with("/downloads/plugins/") && url.query().is_none()
+        let origin = url.origin().ascii_serialization();
+        let valid_path = (origin == website::ORIGIN && url.path().starts_with("/downloads/plugins/"))
+            || (origin == website::CDN_ORIGIN && url.path().starts_with("/agent2api/plugins/"));
+        valid_path && url.query().is_none()
     })) { return Err("官方插件只能从官网下载，请重新刷新插件列表".to_string()); }
     crate::server::core::update::assert_downloadable(&asset.url).map_err(|error| error.message)?;
     if asset.size > MAX_PACK_BYTES as u64 {
@@ -686,20 +742,20 @@ mod tests {
             "tag_name": "v0.2.0",
             "html_url": "https://github.com/x/y/releases/tag/v0.2.0",
             "assets": [
-                { "name": "agent2api-providers-0.2.0-x86_64-pc-windows-msvc.zip",
+                { "name": "agent2api-providers-0.2.0-wasm32-unknown-unknown.zip",
                   "browser_download_url": "https://example.com/a.zip", "size": 100 },
                 { "name": "agent2api-providers-0.2.0-aarch64-apple-darwin.zip",
                   "browser_download_url": "https://example.com/b.zip", "size": 200 }
             ]
         });
-        let asset = pick_asset(&release, "agent2api-providers", "x86_64-pc-windows-msvc")
-            .expect("应当挑到 Windows 包");
+        let asset = pick_asset(&release, "agent2api-providers", crate::server::core::plugin_host::wasm::manifest::TARGET)
+            .expect("应当挑到 Wasm 包");
         assert_eq!(asset.version, "0.2.0");
         assert_eq!(asset.size, 100);
         assert_eq!(asset.url, "https://example.com/a.zip");
     }
 
-    /// 找不到当前平台时返回 None（而不是错挑一个别的平台）。
+    /// 找不到 Wasm 包（例如只有旧平台二进制）时返回 None。
     #[test]
     fn skips_other_platforms() {
         let release = json!({
@@ -709,7 +765,7 @@ mod tests {
                   "browser_download_url": "https://example.com/b.zip" }
             ]
         });
-        assert!(pick_asset(&release, "agent2api-providers", "x86_64-pc-windows-msvc").is_none());
+        assert!(pick_asset(&release, "agent2api-providers", crate::server::core::plugin_host::wasm::manifest::TARGET).is_none());
     }
 
     /// tag 带 `v` 前缀也要认。
@@ -718,12 +774,12 @@ mod tests {
         let release = json!({
             "tag_name": "v1.2.3",
             "assets": [
-                { "name": "agent2api-providers-1.2.3-x86_64-unknown-linux-gnu.zip",
+                { "name": "agent2api-providers-1.2.3-wasm32-unknown-unknown.zip",
                   "browser_download_url": "https://example.com/a.zip" }
             ]
         });
-        let asset = pick_asset(&release, "agent2api-providers", "x86_64-unknown-linux-gnu")
-            .expect("应当挑到 Linux 包");
+        let asset = pick_asset(&release, "agent2api-providers", crate::server::core::plugin_host::wasm::manifest::TARGET)
+            .expect("应当挑到 Wasm 包");
         assert_eq!(asset.version, "1.2.3");
     }
 

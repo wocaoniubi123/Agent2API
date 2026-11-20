@@ -54,11 +54,17 @@ pub async fn trusted_digest(value: &str) -> Option<(String, u64)> {
     if let Some(digest) = cached(value) { return Some(digest); }
     let url = url::Url::parse(value).ok()?;
     let parts: Vec<_> = url.path_segments()?.collect();
-    // 官网是 `/downloads/{owner}/{repo}/{tag}/{name}`；自用 fork 的 GitHub 是
-    // `/owner/repo/releases/download/{tag}/{name}`（2026-11-19 独立复核 P1-4：
-    // 原来只认前者，GitHub 的 6 段路径直接返回 None → 缓存过期后下载被 fail-closed 拒）。
+    // 三种下载地址都要认：
+    //   官网 `/downloads/{owner}/{repo}/{tag}/{name}`
+    //   CDN  `/agent2api/installers/{owner}/{repo}/{tag}/{hash}/{name}`（上游分发源）
+    //   GitHub `/owner/repo/releases/download/{tag}/{name}`（自用 fork 的仓库）
+    // 2026-11-19 独立复核 P1-4：原来只认官网，GitHub 的 6 段路径直接返回 None
+    // → 缓存过期后下载被 fail-closed 拒。
     let (repository, tag, api) = match parts.as_slice() {
         ["downloads", owner, repo, tag, _name] => {
+            (format!("{owner}/{repo}"), tag.to_string(), website::API_BASE)
+        }
+        ["agent2api", "installers", owner, repo, tag, _hash, _name] => {
             (format!("{owner}/{repo}"), tag.to_string(), website::API_BASE)
         }
         [owner, repo, "releases", "download", tag, _name] => {
@@ -66,6 +72,17 @@ pub async fn trusted_digest(value: &str) -> Option<(String, u64)> {
         }
         _ => return None,
     };
+    // 上游：CDN 的 releases feed 里已经带了 digest，能命中就不用再问 API。
+    if let Ok(feed) = website::fetch_json(website::CDN_RELEASES_URL, 15_000).await {
+        if feed.status.is_success() && feed.value.get("repository").and_then(Value::as_str) == Some(repository.as_str()) {
+            if let Some(releases) = feed.value.get("releases").and_then(Value::as_array) {
+                for release in releases {
+                    remember_website_release(release, &repository);
+                }
+                if let Some(digest) = cached(value) { return Some(digest); }
+            }
+        }
+    }
     let endpoint = format!("{api}/repos/{repository}/releases/tags/{tag}");
     let response = website::fetch_json(&endpoint, 15_000).await.ok()?;
     if !response.status.is_success() { return None; }

@@ -254,8 +254,12 @@ async fn supplement_custom(value: &mut Value, channels: crate::server::config::U
 }
 
 async fn fetch_catalog(channels: crate::server::config::UpdateChannels) -> Result<Value, UpdateError> {
-    let url = format!("{}/catalog?stable={}&beta={}", update::INDEX_SOURCE, u8::from(channels.stable), u8::from(channels.beta));
-    let response = crate::server::core::update::website::fetch_json(&url, 30_000).await?;
+    let fallback_url = format!("{}/catalog?stable={}&beta={}", update::INDEX_SOURCE, u8::from(channels.stable), u8::from(channels.beta));
+    let response = crate::server::core::update::website::fetch_json_with_fallback(
+        crate::server::core::update::website::CDN_PLUGIN_CATALOG_URL,
+        &fallback_url,
+        30_000,
+    ).await?;
     if !response.status.is_success() || response.value["schema"] != 1 {
         return Err(UpdateError::new("官网插件目录暂不可用"));
     }
@@ -325,6 +329,34 @@ async fn fetch_catalog(channels: crate::server::config::UpdateChannels) -> Resul
             // 地址，直接用等于自建源没生效 —— 2026-11-19 独立复核 P0-1）。
             // `release_for_channels` 内部已经按同一份白名单豁免了路径校验与验签。
             update::release_for_channels(&repo, id, Some(&detail), None, channels).await
+        } else if let Some(items) = entry["releases"].as_array() {
+            // 上游：CDN 目录给出多条 release，取当前通道内版本最高的一条
+            let mut matched: Option<update::ReleaseAssets> = None;
+            let mut parse_error: Option<UpdateError> = None;
+            for release in items {
+                if release.is_null() { continue; }
+                let mut assets = match update::pick_release_assets(release, id, Some(&detail), None) {
+                    Some(assets) => assets,
+                    None => {
+                        parse_error = Some(UpdateError::new("官网插件版本或附件格式无效"));
+                        continue;
+                    }
+                };
+                if !channels.accepts(assets.prerelease) { continue; }
+                if let Err(error) = update::validate_release_urls(release, &assets, id) {
+                    parse_error = Some(error);
+                    continue;
+                }
+                assets.require_signed = true;
+                if matched.as_ref().is_none_or(|best| {
+                    crate::server::core::update::compare_versions(&assets.version, &best.version) == Some(1)
+                }) {
+                    matched = Some(assets);
+                }
+            }
+            if matched.is_some() { Ok(matched) }
+            else if let Some(error) = parse_error { Err(error) }
+            else { Ok(None) }
         } else if release.is_null() {
             Ok(None)
         } else {
