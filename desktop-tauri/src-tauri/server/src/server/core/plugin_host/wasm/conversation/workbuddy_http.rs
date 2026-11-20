@@ -36,11 +36,14 @@ const ORIGINS: [&str; 4] = [
     "https://www.codebuddy.cn",
 ];
 /// 对话正文上限。条数不单独设闸门：上下文越长条数自然越多，真正会吃掉内存
-/// 的是字节总量与 JSON 节点数，这两道已经守住（15 MB / 65536 节点，
+/// 的是字节总量与 JSON 节点数，这两道已经守住（15 MiB / 65536 节点，
 /// 折合约 1.6 万条，远在上游对话接口的合理范围内）。曾设过 `messages ≤ 512`
 /// 的条数限制，它与字节限制是两回事，且比节点上限严 20 倍，是长会话
 /// `material:messages-over-512` 的直接拒因（2026-11-19 实测 536 条被拒）。
-const MAX_BODY: usize = 15 * 1024 * 1024;
+///
+/// 上游把这个常量导出给 `script/transport/frozen.rs` 复用（冻结 HTTP 的
+/// 正文上限要跟着一起走），所以是 `pub(in ...)` 而不是文件内私有。
+pub(in crate::server::core::plugin_host) const MAX_BODY: usize = 15 * 1024 * 1024;
 const MAX_ENCODED: usize = ((MAX_BODY + 2) / 3) * 4;
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_NODES: usize = 65_536;
@@ -344,15 +347,18 @@ fn material(context: &Context, params: &Value, url: String) -> Result<Material, 
         return Err(invalid("material:header-authorization"));
     }
     // 正文两种来源二选一：`body`（base64 文本，旧通道）或 `body_resource`
-    // （资源 id，SDK `http::open_json_resource` 用的新通道）。上游 workbuddy 包
-    // 已改用后者，宿主必须两条都认，否则每次对话都判「材料无效」。
+    // （资源 id，SDK `http::open_json_resource` 用的新通道）。抽取到 `body_bytes`，
+    // 与上游的拆法一致；里面每条判定都带 tag，日志里能直接定位是哪一条拒的。
+    //
+    // 通道差异要保留：SDK 的 `resource_params` 只发 `method/url/headers/body_resource`，
+    // **不带** `provider`/`max_chunk`/`id`（见 `wasm/sdk/src/http.rs`），而
+    // `open_raw`/`open` 走旧 `body` 通道时才发。所以这三项只在旧通道检查，
+    // 新通道的请求 id 由资源 id 自己承载——否则每次对话都会判「材料无效」。
     let encoded = params["body"].as_str().filter(|body| !body.is_empty() && body.len() <= MAX_ENCODED);
     let resource = params.get("body_resource").and_then(Value::as_str).filter(|id| !id.is_empty());
     if encoded.is_some() && resource.is_some() {
         return Err(invalid("material:both-channel"));
     }
-    // 旧通道（`body` base64）才要求 provider / max_chunk / id 三项；
-    // 新通道（`body_resource`）的 id 由 `body_resource` 自己承载。
     let id = match resource {
         Some(resource) => resource,
         None => {
@@ -364,24 +370,7 @@ fn material(context: &Context, params: &Value, url: String) -> Result<Material, 
                 .ok_or_else(|| invalid("material:legacy-id"))?
         }
     };
-    let bytes = match (encoded, resource) {
-        (Some(encoded), None) => {
-            let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| invalid("material:base64"))?;
-            // 往返一致才认：防止 base64 里混进非规范编码（同普通通道的口径）
-            if base64::engine::general_purpose::STANDARD.encode(&bytes) != encoded {
-                return Err(invalid("material:base64-roundtrip"));
-            }
-            bytes.into()
-        }
-        (None, Some(resource)) => {
-            context.permission("resources.v1")?;
-            context.blobs.raw(resource)?
-        }
-        _ => return Err(invalid("material:channel")),
-    };
-    if bytes.is_empty() || bytes.len() > MAX_BODY {
-        return Err(invalid("material:body-size"));
-    }
+    let bytes = body_bytes(context, params)?;
     let value: Value = crate::server::core::plugin_host::wasm::managed_task::declaration::parse_object(&bytes, MAX_BODY)
         .map_err(|_| invalid("material:parse"))?;
     let mut nodes = 0;
@@ -402,7 +391,43 @@ fn material(context: &Context, params: &Value, url: String) -> Result<Material, 
     }
     let params = json!({ "method": "POST", "url": url, "headers": wire_headers, "id": id,
         "provider": PROVIDER, "trace": trace, "max_chunk": 64 * 1024 });
-    Ok(Material { params, bytes: Bytes::from(bytes), headers, url })
+    Ok(Material { params, bytes, headers, url })
+}
+
+fn body_bytes(context: &Context, params: &Value) -> Result<Bytes, proto::WireError> {
+    let raw = params.get("body").filter(|value| !value.is_null());
+    let resource = params.get("body_resource").filter(|value| !value.is_null());
+    match (raw, resource) {
+        (Some(raw), None) => {
+            let encoded = raw.as_str().filter(|body| !body.is_empty() && body.len() <= MAX_ENCODED)
+                .ok_or_else(|| invalid("material:encoded"))?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)
+                .map_err(|_| invalid("material:base64"))?;
+            // 往返一致才认：防止 base64 里混进非规范编码（同普通通道的口径）
+            if bytes.is_empty() || bytes.len() > MAX_BODY
+                || base64::engine::general_purpose::STANDARD.encode(&bytes) != encoded {
+                return Err(invalid("material:body-size"));
+            }
+            Ok(Bytes::from(bytes))
+        }
+        (None, Some(resource)) => {
+            context.permission("resources.v1")?;
+            let id = resource.as_str().filter(|id| !id.is_empty())
+                .ok_or_else(|| invalid("material:resource-id"))?;
+            let bytes = context.blobs.raw(id).map_err(|_| invalid("material:resource-raw"))?;
+            if bytes.is_empty() {
+                return Err(invalid("material:resource-empty"));
+            }
+            if bytes.len() > MAX_BODY {
+                return Err(proto::WireError::with_code(
+                    format!("请求正文超过 {} MiB 的受控上限，请缩小上下文或图片后重试", MAX_BODY / (1024 * 1024)),
+                    "plugin_request_too_large",
+                ));
+            }
+            Ok(bytes)
+        }
+        _ => Err(invalid("material:channel")),
+    }
 }
 
 fn shape(value: &Value, depth: usize, nodes: &mut usize) -> Result<(), proto::WireError> {
