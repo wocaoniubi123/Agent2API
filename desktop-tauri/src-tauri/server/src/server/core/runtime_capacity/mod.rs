@@ -43,6 +43,8 @@ pub struct Limits {
     pub queue_wait_seconds: u64,
     pub cpu_pressure: bool,
     pub memory_pressure: bool,
+    #[serde(skip)]
+    pub(super) memory_ceiling: bool,
 }
 
 impl Limits {
@@ -78,7 +80,7 @@ fn effective(settings: &CapacitySettings, resources: monitor::Resources) -> Limi
     let memory_bytes = if settings.memory_mib == 0 { auto_memory.max(16 * MIB) }
         else { settings.memory_mib.saturating_mul(MIB).min((resources.total_bytes * 3 / 4) as usize).max(16 * MIB) };
     let process_ceiling = resources.total_bytes.saturating_mul(4) / 5;
-    // 只看**本进程**自己的占用，不看整机可用内存。
+    // 只看**本进程**自己的占用 + 内核压力等级，不看整机可用内存。
     //
     // 原先还有一条 `available_bytes < total_bytes / 10`：整机可用内存低于 10%
     // 就算「内存压力」，而 `queue::allowed` 对压力态是**无条件拒绝**所有对话/
@@ -88,8 +90,13 @@ fn effective(settings: &CapacitySettings, resources: monitor::Resources) -> Limi
     // 整机内存紧张是操作系统的调度问题，网关只为自己进程的占用负责；
     // 真正的内存闸门是 `MemoryBudget` 的总预算（默认整机一半），它按实际分配
     // 累加、超了就拒绝分配，不需要靠整机可用内存再拦一道。
-    // beta.1 没有这套准入，去掉这一条即恢复「自己的事自己管」的口径。
-    let memory_pressure = resources.container_bytes.unwrap_or(resources.process_bytes) >= process_ceiling;
+    //
+    // macOS 的内核压力等级保留（上游 e4d8e3f7）：它是「系统真的快不行了」的信号，
+    // 不是「别人的进程占了内存」，2 级在正常桌面使用中就会触发，所以只认 4（critical）。
+    // 取不到等级的平台没有这条信号，就只看本进程占用。
+    let memory_ceiling = resources.container_bytes.unwrap_or(resources.process_bytes) >= process_ceiling;
+    let kern_pressure = resources.os_pressure_level.is_some_and(|level| level >= 4);
+    let memory_pressure = kern_pressure || memory_ceiling;
     let cpu_pressure = resources.cpu_percent >= 90.0;
     let automatic = settings.mode == CapacityMode::Auto;
     let conversations = if automatic {
@@ -107,7 +114,7 @@ fn effective(settings: &CapacitySettings, resources: monitor::Resources) -> Limi
         connections: settings.max_connections.min(resources.connection_ceiling),
         memory_bytes, queue_requests: settings.queue_requests,
         queue_bytes: settings.queue_memory_mib.saturating_mul(MIB).min(memory_bytes / 4).max(8 * MIB),
-        queue_wait_seconds: settings.queue_wait_seconds, cpu_pressure, memory_pressure,
+        queue_wait_seconds: settings.queue_wait_seconds, cpu_pressure, memory_pressure, memory_ceiling,
     }
 }
 
@@ -131,6 +138,7 @@ pub fn snapshot() -> Value {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RejectReason {
     MemoryPressure,
+    MemoryCeiling,
     CpuPressure,
     ConcurrencyLimit,
     ProviderLimit,
@@ -141,8 +149,9 @@ pub enum RejectReason {
 }
 
 impl RejectReason {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::MemoryPressure,
+        Self::MemoryCeiling,
         Self::CpuPressure,
         Self::ConcurrencyLimit,
         Self::ProviderLimit,
@@ -155,19 +164,21 @@ impl RejectReason {
     fn index(self) -> usize {
         match self {
             Self::MemoryPressure => 0,
-            Self::CpuPressure => 1,
-            Self::ConcurrencyLimit => 2,
-            Self::ProviderLimit => 3,
-            Self::QueueFull => 4,
-            Self::QueueMemoryFull => 5,
-            Self::PluginSlotLimit => 6,
-            Self::QueueTimeout => 7,
+            Self::MemoryCeiling => 1,
+            Self::CpuPressure => 2,
+            Self::ConcurrencyLimit => 3,
+            Self::ProviderLimit => 4,
+            Self::QueueFull => 5,
+            Self::QueueMemoryFull => 6,
+            Self::PluginSlotLimit => 7,
+            Self::QueueTimeout => 8,
         }
     }
 
     pub fn code(self) -> &'static str {
         match self {
             Self::MemoryPressure => "memory_pressure",
+            Self::MemoryCeiling => "memory_ceiling",
             Self::CpuPressure => "cpu_pressure",
             Self::ConcurrencyLimit => "concurrency_limit",
             Self::ProviderLimit => "provider_limit",
@@ -181,6 +192,7 @@ impl RejectReason {
     pub fn label(self) -> &'static str {
         match self {
             Self::MemoryPressure => "系统或容器内存紧张",
+            Self::MemoryCeiling => "进程或容器内存已达上限",
             Self::CpuPressure => "系统CPU负载过高",
             Self::ConcurrencyLimit => "并发数已达上限",
             Self::ProviderLimit => "提供商并发已达上限",
@@ -193,7 +205,8 @@ impl RejectReason {
 
     pub fn client_message(self, class: Class) -> &'static str {
         match self {
-            Self::MemoryPressure => "系统或容器可用内存紧张，排队等待已结束，请稍后重试",
+            Self::MemoryPressure => "系统或容器可用内存紧张，暂缓接收后台或图片任务，请稍后重试",
+            Self::MemoryCeiling => "网关进程或容器内存占用已接近上限，排队等待已结束，请稍后重试",
             Self::CpuPressure => "系统 CPU 负载过高，暂缓接收后台或图片任务，请稍后重试",
             Self::ConcurrencyLimit => {
                 if matches!(class, Class::Request | Class::ImageRequest) {
@@ -212,14 +225,14 @@ impl RejectReason {
 
     pub fn retry_after_seconds(self) -> u64 {
         match self {
-            Self::MemoryPressure | Self::CpuPressure | Self::QueueFull | Self::QueueMemoryFull => 2,
+            Self::MemoryPressure | Self::MemoryCeiling | Self::CpuPressure | Self::QueueFull | Self::QueueMemoryFull => 2,
             Self::ConcurrencyLimit | Self::ProviderLimit | Self::PluginSlotLimit | Self::QueueTimeout => 1,
         }
     }
 }
 
 #[derive(Default)]
-pub(super) struct RejectCounts([u64; 8]);
+pub(super) struct RejectCounts([u64; 9]);
 
 impl RejectCounts {
     pub(super) fn record(&mut self, reason: RejectReason) {
@@ -251,6 +264,7 @@ pub struct CapacityRejection {
     pub available_bytes: u64,
     pub total_bytes: u64,
     pub used_bytes: u64,
+    pub os_pressure_level: Option<u8>,
 }
 
 impl CapacityRejection {
@@ -263,8 +277,9 @@ impl CapacityRejection {
     }
 
     pub fn describe(&self) -> String {
+        let pressure = self.os_pressure_level.map_or_else(String::new, |level| format!(" 内核压力={level}"));
         format!(
-            "原因={}({}) 等待={}ms 并发={}/{} 排队={}/{} 排队内存={}/{}MiB 内存占用={}/{}MiB 可用={}MiB",
+            "原因={}({}) 等待={}ms 并发={}/{} 排队={}/{} 排队内存={}/{}MiB 内存占用={}/{}MiB 可用={}MiB{}",
             self.reason.label(),
             self.reason.code(),
             self.waited_ms,
@@ -277,6 +292,7 @@ impl CapacityRejection {
             bytes_to_mib(self.used_bytes),
             bytes_to_mib(self.total_bytes),
             bytes_to_mib(self.available_bytes),
+            pressure,
         )
     }
 }

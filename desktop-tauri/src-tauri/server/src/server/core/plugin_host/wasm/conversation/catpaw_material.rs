@@ -14,9 +14,9 @@ use crate::server::core::plugin_host::{wasm::context::Shared, Host};
 const MAX_BODY: usize = 16 * 1024 * 1024;
 const MAX_DEPTH: usize = 64;
 const MAX_NODES: usize = 65_536;
-// 条数不单独设闸门：上下文越长条数自然越多，真正吃内存的是字节总量与
-// JSON 节点数，这两道已经守住（16 MB / 65536 节点，折合约 1.6 万条）。
-// 曾设过 `messages ≤ 512`，与 workbuddy 那处同一类问题（2026-11-19 一并去掉）。
+// 条数不单独设闸门（上游 a6b551c7 做了同一件事）：上下文越长条数自然越多，
+// 真正吃内存的是字节总量与 JSON 节点数，这两道已经守住（16 MB / 65536 节点，
+// 折合约 1.6 万条）。曾设过 `messages ≤ 512`，与 workbuddy 那处同一类问题。
 const MAX_TOOLS: usize = 256;
 const MAX_BLOCKS: usize = 1024;
 const MAX_ARGUMENTS: usize = 256 * 1024;

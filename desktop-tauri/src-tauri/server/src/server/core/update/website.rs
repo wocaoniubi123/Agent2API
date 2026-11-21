@@ -17,6 +17,8 @@ pub const CDN_PLUGIN_CATALOG_URL: &str = "https://cdn.agent2api.dev/agent2api/fe
 pub const CDN_COMMUNITY_CATALOG_URL: &str = "https://cdn.agent2api.dev/agent2api/feeds/community/catalog.json";
 pub const CDN_COMMUNITY_DISTRIBUTION_URL: &str = "https://cdn.agent2api.dev/agent2api/feeds/community/distribution.json";
 pub const CDN_COMMUNITY_REGISTRY_URL: &str = "https://cdn.agent2api.dev/agent2api/feeds/community/registry.json";
+pub const CDN_UPSTREAM_VERSIONS_URL: &str = "https://cdn.agent2api.dev/agent2api/feeds/providers/upstream-versions.json";
+pub const API_UPSTREAM_VERSIONS_URL: &str = "https://agent2api.dev/api/providers/upstream-versions";
 
 /// `value` 与 `status` 都是可克隆的纯数据，加 `Clone` 是为了让上层把成功应答
 /// 缓存起来复用（见 `plugin_host::update` 里自建仓库的 Releases 缓存）。
@@ -83,12 +85,18 @@ pub fn trusted_url(value: &str) -> bool {
 pub fn api_url(value: &str) -> bool {
     trusted_url(value) && url::Url::parse(value).is_ok_and(|url| {
         let origin = url.origin().ascii_serialization();
+        // 三个来源都放行，逐条列出来便于对账：
+        //   · 官方：`/api/updates/`、`/api/plugins/`、`/api/providers/`（最后一条是上游
+        //     e4d8e3f7 新增的，用于 provider 目录/续期查询）
+        //   · CDN 分发源：`/agent2api/feeds/` 下的 feed，且不带 query（带 query 是别的用途）
+        //   · 自用 fork：GitHub Releases API（`/repos/{owner}/{repo}/releases...`），
+        //     「检查更新」读自建仓库的包走这条
         let official = origin == ORIGIN
-            && (url.path().starts_with("/api/updates/") || url.path().starts_with("/api/plugins/"));
-        // 上游：CDN 分发源的 feed（app / releases / plugins / community）
+            && (url.path().starts_with("/api/updates/")
+                || url.path().starts_with("/api/plugins/")
+                || url.path().starts_with("/api/providers/"));
         let cdn = origin == CDN_ORIGIN
             && url.path().starts_with("/agent2api/feeds/") && url.query().is_none();
-        // 自用 fork：GitHub Releases API（`/repos/{owner}/{repo}/releases...`）
         let github = url.host_str() == Some("api.github.com")
             && url.path().starts_with("/repos/")
             && url.path().contains("/releases");

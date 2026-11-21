@@ -46,7 +46,9 @@ impl Invocation {
         // 否则只看 hostCalls 会误以为插件在死循环调 API。
         snapshot["readCalls"] = json!(context.reads);
         snapshot["memoryBytes"] = json!(limits.linear_bytes);
-        snapshot["memoryLimitBytes"] = json!(context.shared.options.manifest.memory_mib * 1024 * 1024);
+        snapshot["memoryLimitBytes"] = json!(
+            context.shared.options.effective_memory_mib(self.method == proto::methods::gateway::CONVERSATION) * 1024 * 1024
+        );
         snapshot["tableBytes"] = json!(limits.table_bytes);
         snapshot["stackLimitBytes"] = json!(super::compilation::MAX_WASM_STACK_BYTES);
         state.snapshot = snapshot;

@@ -11,11 +11,7 @@ pub(super) const SOURCE: &str = "CatX";
 pub(super) const MODE: &str = "CATX_APP";
 pub(super) const PERMISSION: &str = "unsafeBypassPermissions";
 pub(super) const TOOL_VERSION: &str = "2.0.2";
-// 客户端声明的 `message_count` 上界。它是一条声明值（不是实际数组），用于范围
-// 校验，所以保留一个上界；原先 512 与 `catpaw_material` 的数组条数闸门同源，
-// 两处都会在大上下文时误拒。这里放宽到 4096（与 observation 同量级），实际
-// 内存仍由 MAX_BODY / MAX_NODES 兜底（2026-11-19）。
-pub(super) const MAX_MESSAGES: usize = 4096;
+
 const MAX_DIRECTIVES: usize = 2 * 1024 * 1024;
 
 pub(super) struct PreparedInput {
@@ -84,8 +80,9 @@ impl PreparedInput {
         tools(&constraints["tool_configs"], &constraints["tool_choice"])?;
         let message_count = params["message_count"]
             .as_u64()
-            .filter(|count| (1..=MAX_MESSAGES as u64).contains(count))
-            .ok_or_else(error::invalid)? as usize;
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| *count >= 1)
+            .ok_or_else(error::invalid)?;
         Ok(Self {
             constraints: json!({ "model_type": model, "model_name": name,
             "effort": effort, "context": context, "tool_configs": constraints["tool_configs"],

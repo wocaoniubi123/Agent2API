@@ -59,16 +59,25 @@ impl Context {
                 return Err(proto::WireError::with_code("本机启动资格检查只能读取账号，不允许刷新或修改", "forbidden"));
             }
         }
-        self.calls += 1;
-        // 数据面读取与业务调用分开配额：`http.read` 只受 `MAX_READ_CALLS`，
-        // 业务调用按 `calls - reads` 计（read 也累加 `calls`，便于整体观察）。
+        self.calls = self.calls.saturating_add(1);
+        // 两个配额分开算：
+        //   · `http.read` 走 `reads` / `MAX_READ_CALLS`（100 万）——长回复必然读很多次，
+        //     实测一次 128 秒的流式对话读 10 万次才读完 15.8 MB（平均每次 154 字节），
+        //     和业务调用共用一个 10 万上限等于按回复长度惩罚插件。
+        //   · 其余调用走 `spin_calls` / `MAX_CALLS`（10 万）——上游 a6b551c7 引入这个
+        //     计数器做同一件事，但它对 `http.read` 也无条件 +1，照搬会让长回复重新
+        //     撞上限，所以这里把 read 排除在外。
+        // `calls` 仍是总数，保留给诊断与统计看。
         if method == "http.read" {
             self.reads = self.reads.saturating_add(1);
             if self.reads > MAX_READ_CALLS {
                 return Err(proto::WireError::with_code("插件读取调用次数超出上限", "plugin_resource_limit"));
             }
-        } else if self.calls.saturating_sub(self.reads) > MAX_CALLS {
-            return Err(proto::WireError::with_code("插件调用次数超出上限", "plugin_resource_limit"));
+        } else {
+            self.spin_calls = self.spin_calls.saturating_add(1);
+            if self.spin_calls > MAX_CALLS {
+                return Err(proto::WireError::with_code("插件调用次数超出上限", "plugin_resource_limit"));
+            }
         }
         if method != "clock.now" && !params.is_object() { return Err(super::error("插件能力参数必须是 JSON 对象")); }
         // started 由 ABI 入口在解码前记录；权限、账号读取及正文准备不能另起计时。
@@ -110,15 +119,6 @@ impl Context {
         }
         if method == "claim.doubao.tasks" {
             return Err(proto::WireError::with_code("当前调用没有豆包原任务领奖来源", "forbidden"));
-        }
-        if let Some(call) = &self.codearts_refresh {
-            if method != "credential.codearts.refresh" || params.as_object().is_none_or(|fields| !fields.is_empty()) {
-                return Err(proto::WireError::with_code("CodeArts换证只接受原调用的固定宿主入口", "forbidden"));
-            }
-            return super::codearts_refresh::exchange(call.clone()).await;
-        }
-        if method == "credential.codearts.refresh" {
-            return Err(proto::WireError::with_code("当前调用没有CodeArts原换证来源", "forbidden"));
         }
         if let Some(result) = self.verification_guard(method, &params).await? { return Ok(result); }
         if let Some(call) = &self.managed { call.validate(&self.shared.options.provider).map_err(super::managed::wire)?; }
@@ -227,7 +227,7 @@ impl Context {
                     .ok_or_else(|| super::error("账号记录缺少标识"))?.to_string();
                 self.account()?;
                 self.identity = record["identity"].as_str().unwrap_or(&self.account).to_string();
-                if self.desktop_launch.is_none() && self.codearts_refresh.is_none()
+                if self.desktop_launch.is_none()
                     && self.doubao_rewards.is_none() {
                     super::legacy_secret::expose(self, &mut record);
                 }
@@ -454,8 +454,10 @@ impl Context {
                         let session = self.codearts_session.as_ref().ok_or_else(|| super::error("对话缺少本次 CodeArts 心跳会话"))?;
                         if params["headers"]["User-Session-Id"].as_str() != Some(session.id.as_str()) { return Err(super::error("CodeArts 对话的会话编号与心跳不符")); }
                         let client = session.client.client().map_err(|_| super::error("CodeArts 原出口已关闭"))?.clone();
+                        let body = super::http::body(self, &params, deadline)?;
+                        deadline.check()?;
                         self.guard_http_submission(&params)?;
-                        let (result,handle) = script::open_pinned(&params,client,deadline.cap_at(self.call_deadline)).await?;
+                        let (result,handle) = script::open_pinned_body(&params, body, client, deadline.cap_at(self.call_deadline)).await?;
                         return self.keep_http(result,handle,deadline);
                     }
                     let body = super::http::body(self, &params, deadline)?;

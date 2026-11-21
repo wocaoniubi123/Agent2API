@@ -18,10 +18,10 @@ import { UserAgentInput, useUserAgentPresets, userAgentEditable, applyUserAgentA
 import { openExternal } from './update-shared'
 import { PluginLoginInteraction, type LoginRequest } from '../../../ui-shared/plugin-login-interaction'
 import { PluginDesktopImport } from '../../../ui-shared/plugin-desktop-import'
-import { PluginCodeArtsEnrollment } from '../../../ui-shared/plugin-codearts-enrollment'
 import { getPluginStartup, subscribePluginStartup } from '../../../ui-shared/plugin-startup'
 import { managedLoginSourceGeneration, MANAGEMENT_SESSION_CHANGE, type ManagedLoginScope } from '../../../ui-shared/plugin-login-managed'
 import { PluginLoginBrowser, PluginLoginFields, PluginLoginMethodPicker, PluginLoginSecurity } from '../../../ui-shared/plugin-login-form'
+import { credentialFilePayload, credentialInputMethod, type CredentialUpload } from '../../../ui-shared/plugin-credential-file'
 import { PluginLoginDiagnostic } from '../../../ui-shared/plugin-login-diagnostic-view'
 import { loginDiagnosticOf, type LoginDiagnostic } from '../../../ui-shared/plugin-login-diagnostic'
 import { usePluginPrompts } from './add-account-plugin-prompts'
@@ -53,6 +53,7 @@ export function DynamicProviderBlock({
   })
   const [selected, setSelected] = React.useState('')
   const [values, setValues] = React.useState<Record<string, Record<string, string>>>({})
+  const [upload, setUpload] = React.useState<CredentialUpload>()
   const [name, setName] = React.useState('')
   // 第三方插件是否允许覆盖由后端申报；网页登录成功后走同一补写入口。
   const [userAgent, setUserAgent] = React.useState('')
@@ -62,7 +63,7 @@ export function DynamicProviderBlock({
   const uaEditable = userAgentEditable(provider)
   const [proxyDraft, setProxyDraft] = React.useState(() => draftOfProxy(undefined))
   const [readingSystemProxy, setReadingSystemProxy] = React.useState(false)
-  const [mode, setMode] = React.useState<'external' | 'embedded'>('external')
+  const [mode, setMode] = React.useState<'external' | 'embedded'>(shared().workbuddyDesktop?.platform === 'web' ? 'external' : 'embedded')
   const [saving, setSaving] = React.useState(false)
   const [error, updateError] = React.useState('')
   const [diagnostic, setDiagnostic] = React.useState<LoginDiagnostic>()
@@ -95,8 +96,7 @@ export function DynamicProviderBlock({
   const loadedAvailability = React.useRef('')
   const localActionsAvailable = shared().workbuddyDesktop?.platform === 'windows'
     && Boolean(shared().__TAURI_INTERNALS__?.invoke) && accountProviderAvailable(provider)
-  const localAction = localActionsAvailable && methodsState.phase === 'ready' && provider === 'chatglm' ? 'local:chatglm-import'
-    : localActionsAvailable && methodsState.phase === 'ready' && provider === 'codearts' ? 'local:enrollment' : ''
+  const localAction = localActionsAvailable && methodsState.phase === 'ready' && provider === 'chatglm' ? 'local:chatglm-import' : ''
   const localActionSelected = Boolean(localAction && selected === localAction)
   const declaredMethod = localActionSelected ? undefined
     : methodsState.methods.find(item => item.id === selected) || methodsState.methods.find(item => !item.reason) || methodsState.methods[0]
@@ -108,7 +108,8 @@ export function DynamicProviderBlock({
   const selectedRef = React.useRef(selected)
   selectedRef.current = selected || method?.id || ''
   const locked = saving || loginView.disabled || readingSystemProxy
-  const submitLocked = locked || resolvedPrompts.pending || Boolean(resolvedPrompts.error)
+  const [readingFile, setReadingFile] = React.useState(false)
+  const submitLocked = locked || readingFile || resolvedPrompts.pending || Boolean(resolvedPrompts.error)
   const remarkRef = React.useRef(name)
   remarkRef.current = name
   const snapshot = React.useRef({ method, inputs, mode, proxyDraft })
@@ -124,7 +125,8 @@ export function DynamicProviderBlock({
   const sameServer = (scope: NonNullable<typeof loginScope.current>) => scope.bridge === shared().workbuddyDesktop
     && scope.origin === window.location.origin && scope.bootId === bootId() && scope.managementGeneration === managedLoginSourceGeneration()
     && (!shared().wbApp?.getState?.()?.pluginStartup?.bootId || scope.bootId === shared().wbApp?.getState?.()?.pluginStartup?.bootId)
-  const savingUnconfirmed = (value: LoginProgress) => value.phase === 'saving' || value.phase === 'unconfirmed' || value.saved === null
+  const savingUnconfirmed = (value: LoginProgress) => value.managedLogin === true
+    && (value.phase === 'saving' || value.phase === 'unconfirmed' || value.saved === null)
   const resultCurrent = (scope: NonNullable<typeof loginScope.current>) => alive.current && loginScope.current === scope
     && !scope.cancelled && sameServer(scope) && accountProviderAvailable(provider)
   const scopeCurrent = (scope: NonNullable<typeof loginScope.current>) => resultCurrent(scope)
@@ -191,6 +193,7 @@ export function DynamicProviderBlock({
       progressRef.current = {}
       setProgress({})
       setValues({})
+      setUpload(undefined)
       setProxyDraft(previous => ({ ...previous, password: '' }))
     }
   }, [active, preserveOnHide, callbackIdentity])
@@ -209,6 +212,7 @@ export function DynamicProviderBlock({
         .filter(prompt => !prompt.secret && Object.hasOwn(previousInputs, prompt.key))
         .map(prompt => [prompt.key, previousInputs[prompt.key]])) : {}
       setValues(retained ? { [retained.id]: nonSecret } : {})
+      setUpload(undefined)
       setSelected(retained?.id || (previousSelection?.startsWith('local:') ? previousSelection : ''))
       setMethodsState(next)
       loadedRef.current = next.phase !== 'error'
@@ -223,8 +227,7 @@ export function DynamicProviderBlock({
         const locale = window.wbI18n?.locale() || 'zh-CN'
         const result = await accountRequest('GET', `/api/session/login/methods?provider=${encodeURIComponent(provider)}&locale=${encodeURIComponent(locale)}`)
         const parsed = parseMethods(result, provider)
-        if (shared().workbuddyDesktop?.platform === 'web') parsed.methods = parsed.methods.filter(method => !method.desktopOnly
-          && !(provider === 'trae' && method.type === 'oauth'))
+        if (shared().workbuddyDesktop?.platform === 'web') parsed.methods = parsed.methods.filter(method => !method.desktopOnly)
         accept(parsed)
       } catch (failure) {
         if (!current) return
@@ -259,7 +262,8 @@ export function DynamicProviderBlock({
           const inputs = readInputs(current.method, current.inputs)
           const requestId = nextLoginRequestId()
           loginScope.current = { origin: window.location.origin, bridge: shared().workbuddyDesktop, bootId: bootId(), managementGeneration: managedLoginSourceGeneration(),
-            state: '', requestId, methodIndex: current.method.methodIndex, remark: current.method.prompts.some(prompt => prompt.key === 'name') ? '' : remarkRef.current.trim(),
+            state: '', requestId, methodIndex: current.method.methodIndex,
+            remark: current.method.type === 'sms' || current.method.prompts.some(prompt => prompt.key === 'name') ? '' : remarkRef.current.trim(),
             managed: false, cancelled: false, deadline: Infinity }
           const owner = loginScope.current
           // 插件申报 embeddedOnly 时一律走内嵌窗口（不信任残留的 mode 状态）。
@@ -318,7 +322,8 @@ export function DynamicProviderBlock({
         setProgress({})
         clearCallback()
         setValues({})
-            setProxyDraft(previous => ({ ...previous, password: '' }))
+        setUpload(undefined)
+        setProxyDraft(previous => ({ ...previous, password: '' }))
         return
       }
       if (next.provider !== provider || next.active !== true) return
@@ -387,7 +392,7 @@ export function DynamicProviderBlock({
         loginScope.current = null
         progressRef.current = {}; setProgress({}); clearCallback()
         snapshot.current = { ...snapshot.current, inputs: {}, proxyDraft: { ...snapshot.current.proxyDraft, password: '' } }
-        setValues({}); setProxyDraft(previous => ({ ...previous, password: '' }))
+        setValues({}); setUpload(undefined); setProxyDraft(previous => ({ ...previous, password: '' }))
       }
     }
     const unsubscribeBoot = subscribePluginStartup(guard)
@@ -431,6 +436,7 @@ export function DynamicProviderBlock({
     if (!alive.current) { await shared().wbApp?.refresh?.(); return }
     setProgress({})
     setValues({})
+    setUpload(undefined)
     setUserAgent('')
     setProxyDraft(draftOfProxy(undefined))
     setError('')
@@ -444,7 +450,7 @@ export function DynamicProviderBlock({
     try {
       if (!accountProviderAvailable(provider)) throw new Error(t('该提供商已不在运行时目录中，请返回列表重新选择'))
       if (method.reason) throw new Error(method.reason)
-      const fields = readInputs(method, inputs)
+      const fields = readInputs(credentialInputMethod(method, upload), inputs)
       const proxy = readProxyDraft(proxyDraft)
       if (proxy && 'source' in proxy && proxy.source === 'rotate') {
         throw new Error(t('登录代理不支持轮询出网，请选择一条已保存的代理'))
@@ -455,6 +461,7 @@ export function DynamicProviderBlock({
       if (method.type === 'api') {
         payload.methodIndex = method.methodIndex
         payload.inputs = fields
+        Object.assign(payload, credentialFilePayload(method, upload, fields))
       } else if (method.type === 'desktop') {
         payload.importDesktop = true
       } else {
@@ -478,6 +485,7 @@ export function DynamicProviderBlock({
     clearCallback()
     progressRef.current = {}
     setValues({})
+    setUpload(undefined)
     setSelected(value)
     setError('')
     setProgress({})
@@ -494,9 +502,24 @@ export function DynamicProviderBlock({
     } catch (failure) { setError(describeError(failure), failure) }
   }
 
+  async function startSmsFlow(): Promise<boolean> {
+    if (submitLocked || !method || requestingRef.current || methodsState.phase === 'loading') {
+      throw new Error(loginView.hint || t('正在处理本次登录，请勿重复提交。'))
+    }
+    if (!accountProviderAvailable(provider)) throw new Error(t('该提供商已不在运行时目录中，请返回列表重新选择'))
+    readInputs(method, inputs)
+    readProxyDraft(proxyDraft)
+    if (!controllerRef.current) throw new Error(t('共享登录桥不可用，请重新打开面板'))
+    if (shared().wbWebLogin?.isActive?.()) throw new Error(loginView.hint || t('此提供商已有登录任务，请先完成或取消。'))
+    setError('')
+    await (controllerRef.current.start() as unknown as Promise<unknown>)
+    return false
+  }
+
   function cancelFlow(): void {
     clearCallback()
     setValues({})
+    setUpload(undefined)
     setProxyDraft(previous => ({ ...previous, password: '' }))
     controllerRef.current?.cancel()
   }
@@ -557,7 +580,7 @@ export function DynamicProviderBlock({
   const formPrompts = method?.prompts.filter(prompt => prompt !== optionalName) || []
   const accountName = optionalName ? inputs[optionalName.key] ?? optionalName.default ?? '' : name
   const instructions = mergeLoginInstructions(methodsState.instructions, progress.managedLogin ? '' : method?.instructions,
-    method?.browserMode === 'plugin' ? pluginBrowserInstructions(provider) : '',
+    method?.browserMode === 'plugin' && !method.embeddedOnly ? pluginBrowserInstructions(provider) : '',
     loginText(progress.instructions), loginText(progress.hint), loginText(loginView.hint))
   const owned = loginScope.current
   const managed: ManagedLoginScope | undefined = progress.managedLogin && owned && owned.methodIndex !== undefined ? {
@@ -574,7 +597,7 @@ export function DynamicProviderBlock({
     {methodsState.phase !== 'loading' && (method || localAction) ? <PluginLoginMethodPicker
       label={t('{label} 账号的添加方式', { label })} disabled={locked || loginView.waiting}
       value={localActionSelected ? localAction : method?.id || ''} methods={methodsState.methods} onChange={selectMethod}
-      extra={localAction ? [{ value: localAction, label: localAction === 'local:enrollment' ? t('续期登记') : t('本机导入') }] : []}
+      extra={localAction ? [{ value: localAction, label: t('本机导入') }] : []}
     /> : null}
 
     {localActionsAvailable && provider === 'chatglm' ? <PluginDesktopImport
@@ -582,23 +605,29 @@ export function DynamicProviderBlock({
       scopeIdentity={JSON.stringify([window.location.origin, bootId(), availability])} footerHost={footerHost} preserveOnHide
       current={() => shared().workbuddyDesktop?.platform === 'windows' && Boolean(shared().__TAURI_INTERNALS__?.invoke) && accountProviderAvailable('chatglm')}
       request={desktopImportRequest} onSaved={async () => { await afterAdd('', label) }} t={t} /> : null}
-    {localActionsAvailable && provider === 'codearts' ? <PluginCodeArtsEnrollment
-      active={active && localActionSelected} disabled={locked || loginView.waiting} footerHost={footerHost}
-      current={() => accountProviderAvailable('codearts')} onSaved={async () => { await shared().wbApp?.refresh?.() }} t={t} /> : null}
-    {progress.active && progress.state ? <PluginLoginInteraction key={progress.state} flow={progress.state} t={t}
-      openExternal={managed ? async url => {
-        if (!managed.current()) throw new DOMException('请求已取消', 'AbortError')
-        if (owned?.bridge?.platform === 'web') {
-          const popup = window.open('about:blank', '_blank')
-          if (!popup) throw new Error('popup_blocked')
-          popup.opener = null
-          popup.location.replace(url)
-          return
-        }
-        if (!owned?.bridge?.openReleasePage) throw new Error('external_browser_unavailable')
-        await owned.bridge.openReleasePage(url)
-      } : openExternal}
-      managed={managed} request={interactionRequest} /> : null}
+    {(progress.active && progress.state) || (methodAvailable && method.type === 'sms' && Boolean(method.sms) && !method.reason)
+      ? <PluginLoginInteraction
+        key={methodAvailable && method.type === 'sms' ? `sms:${provider}:${method.id}` : progress.state}
+        flow={progress.active && progress.state ? progress.state : ''} t={t}
+        smsConfig={methodAvailable && method.type === 'sms' && !method.reason ? method.sms : undefined}
+        onStartSms={startSmsFlow} startingSms={loginView.waiting}
+        smsStartDisabled={submitLocked || requestingRef.current || methodsState.phase === 'loading' || Boolean(method?.reason)}
+        openExternal={managed ? async url => {
+          if (!managed.current()) throw new DOMException('请求已取消', 'AbortError')
+          if (owned?.bridge?.platform === 'web') {
+            const popup = window.open('about:blank', '_blank')
+            if (!popup) throw new Error('popup_blocked')
+            popup.opener = null
+            popup.location.replace(url)
+            return
+          }
+          if (!owned?.bridge?.openReleasePage) throw new Error('external_browser_unavailable')
+          await owned.bridge.openReleasePage(url)
+        } : openExternal}
+        managed={managed} openEmbedded={async (flow, interaction) => {
+          if (!managed?.current() || !owned?.bridge?.openManagedLogin) throw new DOMException('请求已取消', 'AbortError')
+          await owned.bridge.openManagedLogin(flow, interaction)
+        }} request={interactionRequest} /> : null}
     {method && methodsState.phase !== 'loading' && instructions ? <p className='plugin-login-instructions'>{instructions}</p> : null}
     {progress.userCode ? <p className='plugin-login-local-scope'>{t('设备授权码：{code}', { code: progress.userCode })}</p> : null}
 
@@ -615,10 +644,11 @@ export function DynamicProviderBlock({
       <PluginLoginBrowser method={method} provider={provider} desktop={shared().workbuddyDesktop?.platform !== 'web'}
         value={mode} onChange={setMode} disabled={locked || loginView.waiting} />
       <PluginLoginFields method={method} prompts={formPrompts} values={inputs} prefix={prefix} disabled={locked || loginView.waiting}
+        upload={upload} onUpload={setUpload} onReading={setReadingFile}
         onChange={(key, value) => setValues(previous => ({ ...previous, [method.id]: { ...previous[method.id], [key]: value } }))} />
       {method.type === 'oauth' || method.type === 'sms' ? <AddFoot host={footerHost} active={active}>
         <Button id={`${prefix}-start`} disabled={submitLocked || Boolean(method.reason)} onClick={startFlow}
-          hidden={method.type === 'sms' && loginView.waiting}>
+          hidden={method.type === 'sms'}>
           {loginView.waiting ? <Spinner /> : null}{method.type === 'sms' ? t('开始短信登录') : loginView.label}
         </Button>
         <Button id={`${prefix}-cancel`} variant='outline' hidden={!loginView.waiting}
@@ -659,8 +689,9 @@ export function DynamicProviderBlock({
     </Alert> : null}
     {methodAvailable ? <AccountProxySection draft={proxyDraft} onChange={setProxyDraft}
       idPrefix={`${prefix}-proxy`} disabled={locked || loginView.waiting} onSystemImportBusy={setReadingSystemProxy}
-      label={t('备注与代理')} summary={`${accountName || t('默认账号名')} · ${accountProxySummary(proxyDraft)}`}>
-      {optionalName || !method.prompts.some(prompt => prompt.key === 'name') ? <div className='plugin-login-field'>
+      label={method.type === 'sms' ? t('账号 / 登录出网代理') : t('备注与代理')}
+      summary={method.type === 'sms' ? accountProxySummary(proxyDraft) : `${accountName || t('默认账号名')} · ${accountProxySummary(proxyDraft)}`}>
+      {method.type !== 'sms' && (optionalName || !method.prompts.some(prompt => prompt.key === 'name')) ? <div className='plugin-login-field'>
         <Label htmlFor={`${prefix}-name`}>{t('备注名')}<span className='plugin-login-optional'>{t('可选')}</span></Label>
         <Input id={`${prefix}-name`} maxLength={MAX_NAME_LENGTH} placeholder={t('可选，留空使用账号昵称')}
           value={accountName} disabled={locked || loginView.waiting} onChange={event => {

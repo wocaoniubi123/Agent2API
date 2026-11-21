@@ -61,6 +61,7 @@ use crate::state::ActiveLogin;
 
 mod result;
 mod managed_wait;
+pub(crate) mod managed_window;
 
 pub const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -685,7 +686,7 @@ fn allowed_hosts(provider: &str) -> Option<&'static [&'static str]> {
         // `providers/qoder/authorize.rs`）—— 那条导航被拦下的症状同样是
         // 「授权成功但永远收不到码」。与 Qoder 同组，必须是 None。
         "catpaw" | "qoder" | "qoder-intl" | "qwenwork" | "qwenwork-intl" | "cline-free"
-        | "cline-pass" | "autoclaw"
+        | "autoclaw"
         | "autoclaw-intl" | "accio" | "accio-cn" | "zcode" | "zcode-intl" | "codearts" | "trae"
         | "kuku" | "antigravity" | "officeace" | "orcaterm" | "atomcode" | "lobsterai" => None,
         // WorkBuddy 的两个地区共用这一张表（表里 `workbuddy.ai` 那一行就是国际站
@@ -811,7 +812,6 @@ fn normalize_provider(provider: &str) -> Result<&'static str, String> {
         "qwenwork-intl" => Ok("qwenwork-intl"),
         "catpaw" => Ok("catpaw"),
         "cline-free" => Ok("cline-free"),
-        "cline-pass" => Ok("cline-pass"),
         "autoclaw" | "autoclaw-intl" => Ok("autoclaw-intl"),
         // Accio 两个地区：授权地址由后端适配器拼（PKCE），壳侧只负责开窗口与
         // 轮询 —— 与 workbuddy / Qoder 同一条路。地区由 **provider 本身**决定
@@ -1188,6 +1188,9 @@ pub async fn start_with_options(
     for key in ["methodIndex", "inputs", "proxy", "locale"] {
         if let Some(value) = options.get(key) { request[key] = value.clone(); }
     }
+    if provider == "raccoon" && mode == "external" {
+        request["callbackOrigin"] = json!(format!("http://127.0.0.1:{}", gateway::proxy_port()));
+    }
     let request_generation = crate::panel_session::revision();
     let request_started = tokio::time::Instant::now();
     // 稍微宽于后端插件 RPC 的 120s 超时，确保真实插件/本地 CLI 错误先返回而不是在 60s 被网关调用超时掩盖。
@@ -1303,14 +1306,18 @@ fn emit_login_progress(app: &AppHandle, flow: &str, started: &Value, instruction
     let callback_input = if manual_callback && started.get("callbackInput").and_then(Value::as_str) == Some("code") {
         "code"
     } else { "url" };
-    let progress = json!({
+    let managed = started["managedLogin"] == true;
+    let mut progress = json!({
         "active": true, "provider": active.provider, "edition": active.edition, "mode": active.mode,
         "state": flow, "manualCallback": manual_callback, "callbackInput": callback_input,
-        "managedLogin": started["managedLogin"] == true, "methodIndex": started["methodIndex"],
+        "managedLogin": managed, "methodIndex": started["methodIndex"],
         "remainingMs": started["remainingMs"], "timeoutMs": started["timeoutMs"],
-        "phase": started["phase"], "saved": started["saved"],
         "instructions": instructions, "hint": hint,
     });
+    if managed {
+        progress["phase"] = started["phase"].clone();
+        progress["saved"] = started["saved"].clone();
+    }
     let _ = app.emit("login:progress", &progress);
     // 兼容仅订阅 onLoginState 的共享 UI 桥，新增字段不会改变旧状态结构。
     let _ = app.emit("login:state", &progress);
@@ -1424,6 +1431,7 @@ impl DynamicNavigation {
 
     fn allows(&self, url: &url::Url) -> bool {
         if !url.username().is_empty() || url.password().is_some() { return false; }
+        if url.as_str() == "about:blank" { return true; }
         let Some(host) = url.host_str() else { return false; };
         match url.scheme() {
             "https" => self.hosts.is_empty() || self.hosts.iter().any(|item| {
@@ -1432,10 +1440,7 @@ impl DynamicNavigation {
             // HTTP 只用于授权地址实际登记的回环 callback，或插件明确申报的
             // 本机登录页；仅白名单写 localhost 不够。
             "http" => matches!(host, "localhost" | "127.0.0.1" | "[::1]")
-                && (self.matches_callback(url) || self.matches_loopback_page(url))
-                && (self.hosts.is_empty() || self.hosts.iter().any(|item| {
-                    host.eq_ignore_ascii_case(item) || host.to_ascii_lowercase().ends_with(&format!(".{item}"))
-                })),
+                && (self.matches_callback(url) || self.matches_loopback_page(url)),
             _ => false,
         }
     }
@@ -1524,14 +1529,18 @@ async fn run_dynamic_login(
             let popup_state = nav_state.clone();
             let seen = Arc::new(AtomicBool::new(false));
             let nav_seen = seen.clone();
+            let direct_callback = provider == "codearts";
             let capture_doubao = provider == "doubaowork";
-            let built = WebviewWindowBuilder::new(app, login_window_label(flow), WebviewUrl::External(auth))
+            let app_for_popup = app.clone();
+            let window_label = login_window_label(flow);
+            let built = WebviewWindowBuilder::new(app, window_label.clone(), WebviewUrl::External(auth))
                 .data_directory(profile.as_ref().ok_or("登录环境不可用")?.path().to_path_buf())
                 .general_autofill_enabled(false)
                 .title(format!("登录 {} 账号", crate::server::core::providers::label_of(provider)))
                 .inner_size(1100.0, 820.0).min_inner_size(760.0, 560.0).center()
                 .on_navigation(move |url| {
                     if nav_policy.is_callback(url) {
+                        if direct_callback { return true; }
                         if !nav_seen.swap(true, Ordering::SeqCst) {
                             let state = nav_state.clone();
                             let callback = url.as_str().to_string();
@@ -1542,6 +1551,14 @@ async fn run_dynamic_login(
                     nav_policy.allows(url)
                 })
                 .on_new_window(move |url, _| {
+                    if direct_callback && policy.is_callback(&url) {
+                        let handle = app_for_popup.clone();
+                        let label = window_label.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Some(window) = handle.get_webview_window(&label) { let _ = window.navigate(url); }
+                        });
+                        return tauri::webview::NewWindowResponse::Deny;
+                    }
                     if capture_doubao && crate::doubaowork_login::allowed(&url) && policy.allows(&url) {
                         return tauri::webview::NewWindowResponse::Allow;
                     }

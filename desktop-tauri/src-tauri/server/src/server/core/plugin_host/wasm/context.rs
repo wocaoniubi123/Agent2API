@@ -98,7 +98,6 @@ pub struct Context {
     pub(super) catpaw_material: Option<Arc<super::conversation::CatPawMaterial>>,
     pub(super) doubao_turn: Option<super::doubao_turn::Turn>,
     pub(super) codearts_session: Option<super::codearts_session::Session>,
-    pub(super) codearts_refresh: Option<Arc<super::codearts_refresh::Call>>,
     pub(super) doubao_rewards: Option<Arc<super::doubao_rewards::Call>>,
     pub(super) task_service: super::managed_task::service::Owner,
     pub(super) catpaw_service: super::catpaw_turn::service::CallSlot,
@@ -125,6 +124,12 @@ pub struct Context {
     /// 读完 15.8 MB（平均每次 154 字节）。把它和业务 API 调用放在同一个 10 万
     /// 上限里，等于按回复长度惩罚插件——那次就是撞上限后整条流被打断。
     pub reads: u32,
+    /// 上游 a6b551c7 新增：同一 `host_call` 在单步里空转的次数。
+    ///
+    /// 与 `reads` 是两回事——`reads` 数的是 `http.read` 这条方法，
+    /// `spin_calls` 数的是「反复调用但没推进状态」这类空转，防的是插件死循环
+    /// 而不是长回复。两个计数器互补，都保留。
+    pub(super) spin_calls: u32,
 }
 
 impl Context {
@@ -134,7 +139,7 @@ impl Context {
         Self {
             shared, call_deadline, account: params["account"].as_str().unwrap_or("").to_string(),
             identity: String::new(), origin_binding: None, usage_query: false, account_maintenance: false, verification: None, claim_owner: None, checkin_call: None, managed: None, kiro_execution: None,
-            desktop_import: None, desktop_launch: None, desktop_selected: false, supplied_credentials: None, supplied_cookie_file: None, supplied_legacy_credentials: None, legacy_secret: None, conversation: None, catpaw_material: None, doubao_turn: None, codearts_session: None, codearts_refresh: None, doubao_rewards: None,
+            desktop_import: None, desktop_launch: None, desktop_selected: false, supplied_credentials: None, supplied_cookie_file: None, supplied_legacy_credentials: None, legacy_secret: None, conversation: None, catpaw_material: None, doubao_turn: None, codearts_session: None, doubao_rewards: None,
             task_service: Default::default(), catpaw_service: Default::default(),
             flow: params["flow"].as_str().unwrap_or("").to_string(),
             session: params["session"].as_str().unwrap_or("").to_string(),
@@ -143,7 +148,7 @@ impl Context {
             proxy_selected: params.get("proxy").is_some(), system_proxy_when_unset, user_agent: None,
             trace: params.get("plugin_trace").cloned().unwrap_or(Value::Null),
             sink, head_sent: false, resources: HashMap::new(), http_handles: HashMap::new(), converters: HashMap::new(),
-            blobs: Default::default(), progress: Default::default(), guards: HashMap::new(), calls: 0, reads: 0,
+            blobs: Default::default(), progress: Default::default(), guards: HashMap::new(), calls: 0, reads: 0, spin_calls: 0,
         }
     }
 }

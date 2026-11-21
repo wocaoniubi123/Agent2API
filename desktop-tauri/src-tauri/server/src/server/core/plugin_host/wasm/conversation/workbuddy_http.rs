@@ -379,8 +379,8 @@ fn material(context: &Context, params: &Value, url: String) -> Result<Material, 
         Err(error) => return Err(error),
     }
     if value["stream"] != true { return Err(invalid("material:stream")); }
-    // 条数不设上限（见 MAX_BODY 处的说明）：只要求 messages 存在且非空，
-    // 长度由 MAX_BODY 与 MAX_NODES 共同兜底。
+    // 条数不设上限（见 MAX_BODY 处的说明；上游 a6b551c7 也去掉了 512 那道）：
+    // 只要求 messages 存在且非空，长度由 MAX_BODY 与 MAX_NODES 共同兜底。
     match value["messages"].as_array() {
         None => return Err(invalid("material:messages-missing")),
         Some(rows) if rows.is_empty() => return Err(invalid("material:messages-empty")),
