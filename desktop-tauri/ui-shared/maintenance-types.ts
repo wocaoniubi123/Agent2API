@@ -1,4 +1,10 @@
-export type MaintenanceTaskId = 'credentialMaintenance' | 'modelRefresh'
+export type MaintenanceTaskId =
+  | 'credentialMaintenance'
+  | 'modelRefresh'
+  | 'updateCheck'
+  | 'pluginCatalogCheck'
+  | 'magpiePluginCheck'
+
 export type MaintenanceSource = 'automatic' | 'manual' | 'passive'
 export type MaintenanceResultStatus = 'refreshed' | 'skipped' | 'failed'
 export type MaintenanceRunStatus = 'running' | 'completed' | 'partial' | 'failed' | 'skipped' | 'interrupted'
@@ -15,6 +21,8 @@ export type MaintenanceTask = {
   lastError: string | null
   nextRunAt: number | null
   retryAt: number | null
+  checkMode?: 'follow' | 'custom'
+  autoUpdate?: boolean
   saved?: boolean
 }
 
@@ -35,6 +43,9 @@ export type MaintenanceItem = {
   fixed: boolean | null
   retryAt: number | null
   forced: boolean
+  currentVersion?: string | null
+  latestVersion?: string | null
+  changeLabel?: string | null
 }
 
 export type MaintenanceRun = {
@@ -72,16 +83,28 @@ export type MaintenanceOverview = {
   /** 每日全量强刷（凭证维护那一组下面的开关与时刻）；旧网关没有这个字段。 */
   dailySweep?: { enabled: boolean; at: string }
 }
+export type MaintenanceTaskPatch = {
+  enabled?: boolean
+  interval?: number
+  checkMode?: 'follow' | 'custom'
+  autoUpdate?: boolean
+}
 export type MaintenanceApi = {
   overview(query: MaintenanceQuery): Promise<MaintenanceOverview>
   detail(id: string): Promise<MaintenanceDetail>
   run(taskId: MaintenanceTaskId): Promise<MaintenanceDetail>
   retry(id: string, itemId?: string): Promise<MaintenanceDetail>
-  save(taskId: MaintenanceTaskId, patch: { enabled: boolean; interval: number }): Promise<MaintenanceTask>
+save(taskId: MaintenanceTaskId, patch: MaintenanceTaskPatch): Promise<MaintenanceTask>
   /** 保存每日全量强刷（可选：没有这个能力的调用方不传）。 */
   saveDailySweep?(patch: { enabled: boolean; at: string }): Promise<{ enabled: boolean; at: string } | undefined>
   /** 立刻执行一次全量强刷（不等每日时刻）；服务端异步起，立刻返回 started。 */
   runDailySweep?(): Promise<{ started?: boolean } | undefined>
 }
 
-export const MAINTENANCE_TASKS: readonly MaintenanceTaskId[] = ['credentialMaintenance', 'modelRefresh']
+export const MAINTENANCE_TASKS: readonly MaintenanceTaskId[] = [
+  'credentialMaintenance',
+  'modelRefresh',
+  'updateCheck',
+  'pluginCatalogCheck',
+  'magpiePluginCheck',
+]
