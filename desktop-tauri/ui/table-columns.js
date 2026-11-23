@@ -145,6 +145,9 @@
         // 积分消耗（WorkBuddy 的 usage.credit）：与 page-requests.css 的默认
         // grid-template-columns 同步；数值右对齐，宽度只够放「0.06」这类读数。
         { key: 'credit', sel: '.req-credit', track: '72px' },
+        // 费用（上游新增的 usage.cost）：与 requests-page.tsx 的 COLUMNS 同序，
+        // track 与 page-requests.css 的 grid-template-columns 同步
+        { key: 'cost', sel: '.req-cost', track: '82px' },
         { key: 'usage', sel: '.req-usage', track: 'minmax(0, 1.6fr)' },
         // 命中率：只放「99.91%」这类读数，与 page-requests.css 的默认轨道同步
         { key: 'hit', sel: '.req-hit', track: '76px' },
