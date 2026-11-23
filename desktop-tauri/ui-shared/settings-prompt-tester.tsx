@@ -47,8 +47,8 @@ export function PromptRuleTester({ api, config, view, t, onLocate }: {
         <div><Label htmlFor='sp-sample-model'>{t('模型')}</Label>
           <Input id='sp-sample-model' value={sample.model} list='sp-model-choices' spellCheck={false}
             placeholder={t('客户端请求的模型名')} onChange={event => {
-              const nextValue = event.currentTarget.value
-              setSample(current => ({ ...current, model: nextValue }))
+              const model = event.currentTarget.value
+              setSample(current => ({ ...current, model }))
             }} />
         </div>
       </div>

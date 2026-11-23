@@ -284,8 +284,8 @@ export function ModelBatchDialog({ models, onClose, onDone }: {
                     <FieldLabel htmlFor='batch-model-reasoning-custom'>{t('自定义等级')}</FieldLabel>
                     <Input id='batch-model-reasoning-custom' maxLength={32} value={reasoning.custom}
                       onChange={event => {
-                        const nextValue = event.currentTarget.value
-                        setReasoning(prev => ({ ...prev, custom: nextValue }))
+                        const custom = event.currentTarget.value
+                        setReasoning(prev => ({ ...prev, custom }))
                       }} />
                   </Field>
                 ) : null}

@@ -252,8 +252,8 @@ export function MappingDialog({ context, onClose }: { context: MappingContext; o
                 placeholder={t('自定义等级（例如 custom-high）')} autoComplete='off'
                 disabled={saving} value={active.custom}
                 onChange={event => {
-                  const nextValue = event.currentTarget.value
-                  setReasoning(prev => ({ ...prev, custom: nextValue }))
+                  const custom = event.currentTarget.value
+                  setReasoning(prev => ({ ...prev, custom }))
                 }}
                 onKeyDown={onEnter} />
             ) : null}

@@ -224,8 +224,8 @@ export function ClientIdentificationPanel({ api, t, active = true }: { api: Clie
     <Dialog open={Boolean(rename)} onOpenChange={open => { if (!open && !busy) setRename(null) }}><DialogContent>
       <DialogHeader><DialogTitle>{t('重命名客户端分类')}</DialogTitle></DialogHeader>
       <DialogBody><Input value={rename?.name || ''} maxLength={80} disabled={busy} onChange={event => {
-        const nextValue = event.currentTarget.value
-        setRename(previous => previous ? { ...previous, name: nextValue } : null)
+        const name = event.currentTarget.value
+        setRename(previous => previous ? { ...previous, name } : null)
       }} aria-label={t('客户端名称')} />{error ? <Alert variant='destructive'>{error}</Alert> : null}</DialogBody>
       <DialogFooter><Button variant='ghost' disabled={busy} onClick={() => setRename(null)}>{t('取消')}</Button><Button disabled={busy || !rename?.name.trim()} onClick={() => { if (view && rename) void save({ ...view.config, clients: view.config.clients.map(client => client.id === rename.id ? { ...client, name: rename.name.trim() } : client) }) }}>{t('保存')}</Button></DialogFooter>
     </DialogContent></Dialog>
