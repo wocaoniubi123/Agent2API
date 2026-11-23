@@ -452,7 +452,7 @@ impl AccountStore {
             .filter_map(|item| item.get("name").and_then(Value::as_str))
             .collect::<Vec<_>>()
             .join("、");
-        logging::log(
+        logging::log_with_level(
             "[Accounts]",
             &format!(
                 "🗑️  批量删除 {} 个账号: {}{}",
@@ -464,6 +464,7 @@ impl AccountStore {
                     format!("（{} 个不存在，已跳过）", failed.len())
                 }
             ),
+            "info",
         );
         // 落盘完成后作废这些账号的 CatPaw 会话映射（放锁，见本函数说明）
         drop(_guard);

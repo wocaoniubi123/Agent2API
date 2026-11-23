@@ -95,8 +95,8 @@ fn effective(settings: &CapacitySettings, resources: monitor::Resources) -> Limi
     // 不是「别人的进程占了内存」，2 级在正常桌面使用中就会触发，所以只认 4（critical）。
     // 取不到等级的平台没有这条信号，就只看本进程占用。
     let memory_ceiling = resources.container_bytes.unwrap_or(resources.process_bytes) >= process_ceiling;
-    let kern_pressure = resources.os_pressure_level.is_some_and(|level| level >= 4);
-    let memory_pressure = kern_pressure || memory_ceiling;
+    let host_memory_pressure = resources.os_pressure_level.is_some_and(|level| level >= 4);
+    let memory_pressure = host_memory_pressure || memory_ceiling;
     let cpu_pressure = resources.cpu_percent >= 90.0;
     let automatic = settings.mode == CapacityMode::Auto;
     let conversations = if automatic {
@@ -191,7 +191,7 @@ impl RejectReason {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::MemoryPressure => "系统或容器内存紧张",
+            Self::MemoryPressure => "系统内存压力过大",
             Self::MemoryCeiling => "进程或容器内存已达上限",
             Self::CpuPressure => "系统CPU负载过高",
             Self::ConcurrencyLimit => "并发数已达上限",
@@ -205,7 +205,7 @@ impl RejectReason {
 
     pub fn client_message(self, class: Class) -> &'static str {
         match self {
-            Self::MemoryPressure => "系统或容器可用内存紧张，暂缓接收后台或图片任务，请稍后重试",
+            Self::MemoryPressure => "系统内存压力过大，暂缓接收后台或图片任务，请稍后重试",
             Self::MemoryCeiling => "网关进程或容器内存占用已接近上限，排队等待已结束，请稍后重试",
             Self::CpuPressure => "系统 CPU 负载过高，暂缓接收后台或图片任务，请稍后重试",
             Self::ConcurrencyLimit => {
