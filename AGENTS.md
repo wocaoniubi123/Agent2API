@@ -50,6 +50,64 @@ tauri-build --bundles nsis
 - `tauri-build` 是 `env.ps1` 里封装的函数：跑完自动把被 tauri 改写的 `src-tauri/Cargo.toml`
   行尾还原，并报告仓库里是否还有别的改动。
 
+### 前端调试：用 web-debug 工具（不重编译、不抢焦点）
+
+改前端（`ui-islands/src/**`、`ui-shared/**`、`ui-kit/**`、`ui/css/**`）后要立刻看效果，
+**不要为验证去编 12 分钟的 exe** —— 面板是纯前端，桌面和 web 共用同一份 `ui/`：
+
+| 形态 | 资源来源 | 改前端后 |
+|---|---|---|
+| 桌面（Tauri） | `ui_assets` 编译进 exe | 必须重编译 |
+| web（浏览器） | 磁盘 `ui_dir` | 只要 `npm run build`（约 30 秒） |
+
+工具在 `G:\ZCode\Agent2API-tool\web-debug\`，用 360 极速浏览器起**屏幕外**的可调试实例，
+全程 CDP，不抢焦点、不动鼠标键盘：
+
+```powershell
+cd G:\ZCode\Agent2API-tool\web-debug
+
+.\start.ps1                              # 起实例：1920×1080、屏幕外、CDP 9224、打开 3065 面板
+.\eval.ps1 "location.href"               # 执行任意 JS，返回结果
+.\eval.ps1 "window.wbApp.showPage('requests'); 'ok'"
+.\eval.ps1 @'
+JSON.stringify([...document.querySelectorAll('.req-head > span')].map(s=>s.textContent.trim()))
+'@
+.\shot.ps1                               # CDP 截图 → shots\<时间戳>.png
+.\stop.ps1                               # 停（只杀带 --remote-debugging-port 的进程，不碰日常浏览器）
+```
+
+| 要点 | 说明 |
+|---|---|
+| 窗口尺寸 | **固定 1920×1080**。1280 宽下 15 列的请求日志会把列压成竖排文字（弹性列被 `minmax(0,…fr)` 压到 0），别调小 |
+| 登录态 | 存在 `web-debug\profile\`，`stop.ps1` 不删，下次启动免登录 |
+| 前台 | 启动瞬间 Chromium 会抢一次，`start.ps1` 结束时还原；之后的 eval / shot 全程不碰前台 |
+| 完整用法 | `web-debug\README.md`（含读 DOM、命中测试、截图的现成配方） |
+
+**不要用桌面端调前端**：Tauri 的 WebView2 不认 `PostMessage`，坐标点击基本无效，只能前台
+`SendInput` —— 那会抢焦点、动鼠标，违反全局 `R13.5`。真要动桌面端，先问用户。
+
+### 合并上游时：产物 vs 手写
+
+`desktop-tauri/ui/` 下混着两类文件，**分类错了会静默丢掉手写改动，重建也修不回**：
+
+| 类型 | 路径 | 合并策略 |
+|---|---|---|
+| 产物（构建生成） | `ui/islands/ui.js` `ui.css` `login.js`、`ui/i18n/**`、`ui/m/mobile.js`、`ui/sw.js` | 整份取上游，之后 `npm run build` 重建 |
+| **手写**（人改即生效） | `ui/css/**`（25 个）、`ui/table-columns.js`、`ui/index.html`、`ui-islands/src/**`、`ui-shared/**`、`ui-kit/**` | **禁止整份取任一方**，逐 hunk 融合 |
+
+判据：在构建脚本 outDir 里 / 重跑构建会被重写 → 产物；被 html 直接 link 引用 / 多行带注释 /
+构建不生成 → 手写。**拿不准按手写处理。**
+
+**踩过的坑（2026-11-23）**：`ui/css/page-requests.css` 被当成产物整份取上游，
+我方 21 行命中率列样式全丢，而 `npm run build` 不会把它长回来（它不在构建链里）。
+合并后必须验证：
+
+```powershell
+git grep -c 'req-hit' -- 'desktop-tauri/ui/css/page-requests.css'                    # 期望 5
+git grep -n 'is-low\|is-mid\|is-high' -- 'desktop-tauri/ui/css/page-requests.css'    # 各 1
+git grep -n "key: 'hit'\|key: 'cost'" -- 'desktop-tauri/ui/table-columns.js'         # 各 1
+```
+
 ### 出包后：把安装包放到桌面
 
 ```powershell
