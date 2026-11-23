@@ -521,8 +521,14 @@ function closeModal(): void {
 /** 打开弹窗（已开着时等价于「重画卡片列表并复位到第 1 步」） */
 function openModal(): void {
   if (root) {
-    handle?.reset()
-    return
+    // 僵尸状态：组件崩过之后 root 仍非空、handle 已被置空、host 可能已脱离文档。
+    // 此时 handle?.reset() 是空操作，直接 return 会让弹窗永远打不开（只能刷新页面）。
+    // 只有「handle 在、host 仍在文档里」才算健康，才走复位分支；否则先清干净再重挂。
+    if (handle && host && document.body.contains(host)) {
+      handle.reset()
+      return
+    }
+    unmountModal()
   }
   pendingAction = null
   mountModal()

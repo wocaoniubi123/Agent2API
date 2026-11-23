@@ -345,7 +345,10 @@ export function InviteCodeDialog({
                       <div className='flex items-center gap-2 border-t border-border/40 bg-muted/30 px-2 py-2 pl-8'>
                         <Input className='w-[180px]' placeholder={t('这一家的邀请码')}
                           value={batchDraft[platform.provider] || ''}
-                          onChange={(event) => setBatchDraft(current => ({ ...current, [platform.provider]: event.target.value }))} />
+                          onChange={(event) => {
+                            const nextValue = event.target.value
+                            setBatchDraft(current => ({ ...current, [platform.provider]: nextValue }))
+                          }} />
                         <Button size='sm' disabled={batchBusy || !(batchDraft[platform.provider] || '').trim()
                           || platform.rows.filter(row => row.state === 'ready' && !row.activated).length === 0}
                           onClick={() => void submitPlatform(platform.provider)}>
@@ -418,7 +421,10 @@ export function InviteCodeDialog({
                                 <div className='flex items-center gap-2 pb-2 pl-12 pr-2'>
                                   <Input className='w-[170px]' placeholder={t('邀请码')}
                                     value={inlineDraft[row.id] || ''}
-                                    onChange={(event) => setInlineDraft(current => ({ ...current, [row.id]: event.target.value }))} />
+                                    onChange={(event) => {
+                                      const nextValue = event.target.value
+                                      setInlineDraft(current => ({ ...current, [row.id]: nextValue }))
+                                    }} />
                                   <Button size='sm' disabled={row.busy || !(inlineDraft[row.id] || '').trim()}
                                     onClick={async () => {
                                       const done = await submitOne(row.id, inlineDraft[row.id] || '')
@@ -437,7 +443,10 @@ export function InviteCodeDialog({
                                 <div className='flex items-center gap-2 pb-2 pl-12 pr-2'>
                                   <Input className='w-[220px]' placeholder={t('兑换码')}
                                     value={inlineDraft[`redeem:${row.id}`] || ''}
-                                    onChange={(event) => setInlineDraft(current => ({ ...current, [`redeem:${row.id}`]: event.target.value }))} />
+                                    onChange={(event) => {
+                                      const nextValue = event.target.value
+                                      setInlineDraft(current => ({ ...current, [`redeem:${row.id}`]: nextValue }))
+                                    }} />
                                   <Button size='sm' disabled={row.busy || !(inlineDraft[`redeem:${row.id}`] || '').trim()}
                                     onClick={async () => {
                                       const done = await submitRedeem(row.id, inlineDraft[`redeem:${row.id}`] || '')

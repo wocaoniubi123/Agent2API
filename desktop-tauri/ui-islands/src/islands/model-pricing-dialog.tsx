@@ -303,27 +303,42 @@ export function ModelPricingDialog({ context, onClose, onSaved }: {
                       <Field>
                         <FieldLabel className='text-[11px]'>{t('超出 Token')}</FieldLabel>
                         <Input type='number' min='1' value={tier.above}
-                          onChange={e => setTiers(prev => prev.map((it, i) => i === idx ? { ...it, above: e.currentTarget.value } : it))} />
+                          onChange={e => {
+                            const nextValue = e.currentTarget.value
+                            setTiers(prev => prev.map((it, i) => i === idx ? { ...it, above: nextValue } : it))
+                          }} />
                       </Field>
                       <Field>
                         <FieldLabel className='text-[11px]'>{t('输入')}</FieldLabel>
                         <Input type='number' min='0' step='any' value={tier.input}
-                          onChange={e => setTiers(prev => prev.map((it, i) => i === idx ? { ...it, input: e.currentTarget.value } : it))} />
+                          onChange={e => {
+                            const nextValue = e.currentTarget.value
+                            setTiers(prev => prev.map((it, i) => i === idx ? { ...it, input: nextValue } : it))
+                          }} />
                       </Field>
                       <Field>
                         <FieldLabel className='text-[11px]'>{t('输出')}</FieldLabel>
                         <Input type='number' min='0' step='any' value={tier.output}
-                          onChange={e => setTiers(prev => prev.map((it, i) => i === idx ? { ...it, output: e.currentTarget.value } : it))} />
+                          onChange={e => {
+                            const nextValue = e.currentTarget.value
+                            setTiers(prev => prev.map((it, i) => i === idx ? { ...it, output: nextValue } : it))
+                          }} />
                       </Field>
                       <Field>
                         <FieldLabel className='text-[11px]'>{t('缓存读')}</FieldLabel>
                         <Input type='number' min='0' step='any' value={tier.cacheRead}
-                          onChange={e => setTiers(prev => prev.map((it, i) => i === idx ? { ...it, cacheRead: e.currentTarget.value } : it))} />
+                          onChange={e => {
+                            const nextValue = e.currentTarget.value
+                            setTiers(prev => prev.map((it, i) => i === idx ? { ...it, cacheRead: nextValue } : it))
+                          }} />
                       </Field>
                       <Field>
                         <FieldLabel className='text-[11px]'>{t('缓存写')}</FieldLabel>
                         <Input type='number' min='0' step='any' value={tier.cacheWrite}
-                          onChange={e => setTiers(prev => prev.map((it, i) => i === idx ? { ...it, cacheWrite: e.currentTarget.value } : it))} />
+                          onChange={e => {
+                            const nextValue = e.currentTarget.value
+                            setTiers(prev => prev.map((it, i) => i === idx ? { ...it, cacheWrite: nextValue } : it))
+                          }} />
                       </Field>
                       <Button size='xs' variant='ghost' type='button'
                         onClick={() => setTiers(prev => prev.filter((_, i) => i !== idx))}>{t('移除')}</Button>

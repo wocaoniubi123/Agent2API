@@ -18,7 +18,7 @@ type Interaction = {
   qr?: { url: string; expiresAt: number } | null
 }
 
-export function PluginLoginInteraction({ flow, request, t, openExternal, openEmbedded, managed, smsConfig, onStartSms, startingSms, smsStartDisabled, remark, onRemarkChange }: {
+export type PluginLoginInteractionProps = {
   flow: string
   request: LoginRequest
   t: (key: string, vars?: Record<string, string | number>) => string
@@ -31,7 +31,16 @@ export function PluginLoginInteraction({ flow, request, t, openExternal, openEmb
   smsStartDisabled?: boolean
   remark?: string
   onRemarkChange?: (value: string) => void
-}) {
+}
+
+function PluginLoginInteractionInner({ flow, request, t, openExternal, openEmbedded, managed, smsConfig, onStartSms, startingSms, smsStartDisabled, remark, onRemarkChange }: PluginLoginInteractionProps) {
+  // 开发态自毁开关：URL 带 ?__loginBoom=1 时，在渲染期主动抛错，
+  // 用来验证外层 LoginErrorBoundary 是否真的接得住。
+  // 注意：必须每次都抛。React 并发渲染会丢弃首个抛错帧、再渲染一次；
+  // 若只抛一次，第二次就正常渲染了，ErrorBoundary 永远看不到 fallback。
+  if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('__loginBoom') === '1') {
+    throw new Error('__loginBoom：开发态自毁开关（验证 ErrorBoundary 用）')
+  }
   const [interaction, setInteraction] = React.useState<Interaction | SmsInteraction | ManagedInteraction | null>(null)
   const [flowDone, setFlowDone] = React.useState(false)
   const flowDoneRef = React.useRef(false)
@@ -238,7 +247,10 @@ export function PluginLoginInteraction({ flow, request, t, openExternal, openEmb
         className='w-full' aria-label={field.label} options={field.options} searchable={field.options.length > 8}
         displayValue={field.options.find(item => item.value === values[field.key])?.label || t('请选择')} />
         : <Input disabled={busy} type={field.secret ? 'password' : 'text'} autoComplete='off' spellCheck={false}
-        value={values[field.key] || ''} onChange={event => setValues(previous => ({ ...previous, [field.key]: event.currentTarget.value }))} />}
+        value={values[field.key] || ''} onChange={event => {
+          const nextValue = event.currentTarget.value
+          setValues(previous => ({ ...previous, [field.key]: nextValue }))
+        }} />}
     </Label>)}
     {interaction.captcha ? 'engine' in interaction.captcha
       ? <Alicom4Captcha key={`${interaction.id}:${captchaGeneration}`} config={interaction.captcha} onChange={setCaptcha} t={t} />
@@ -254,4 +266,43 @@ function loginQrUrl(value: string): string {
     return url.protocol === 'https:' && !url.username && !url.password && !url.hash
       && ['mp.weixin.qq.com', 'api.kuaipaper.com', 'api.claw.speedai.com'].includes(url.hostname) ? url.href : ''
   } catch { return '' }
+}
+
+/**
+ * 登录表单的错误边界。
+ *
+ * 为什么要有：插件登录表单在渲染期读 `interaction` 里的上游数据、也会读合成事件字段，
+ * 任何一处抛错都会沿 React 树往上冒 —— 没有边界兜住时整棵弹窗树被卸载，
+ * 用户看到的就是「界面直接没了」，而且之后 openModal 还会卡在僵尸 root 上。
+ * 有这一层之后，只卸载表单这一块，弹窗骨架和「重试」入口都还在。
+ */
+class LoginErrorBoundary extends React.Component<
+  { children: React.ReactNode; t: PluginLoginInteractionProps['t'] },
+  { failed: boolean; message: string }
+> {
+  constructor(props: { children: React.ReactNode; t: PluginLoginInteractionProps['t'] }) {
+    super(props)
+    this.state = { failed: false, message: '' }
+  }
+
+  static getDerivedStateFromError(error: unknown) {
+    return { failed: true, message: error instanceof Error ? error.message : String(error) }
+  }
+
+  componentDidCatch(error: unknown, info: React.ErrorInfo) {
+    console.error('[plugin-login] 登录表单渲染失败', error, info)
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children
+    return <section className='flex flex-col items-start gap-3 rounded-lg border border-hairline p-3'>
+      <p className='text-xs text-destructive'>{this.props.t('登录表单渲染失败，请重试')}</p>
+      <p className='text-[11px] text-muted-foreground'>{this.state.message}</p>
+      <Button onClick={() => this.setState({ failed: false, message: '' })}>{this.props.t('重试')}</Button>
+    </section>
+  }
+}
+
+export function PluginLoginInteraction(props: PluginLoginInteractionProps) {
+  return <LoginErrorBoundary t={props.t}><PluginLoginInteractionInner {...props} /></LoginErrorBoundary>
 }

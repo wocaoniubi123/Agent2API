@@ -262,10 +262,18 @@ export function ScriptPluginsPanel({ state, request, refresh, t, disabled = fals
           <DialogDescription className='text-xs leading-relaxed text-subtle'>{t('仅安装你信任的 npm 包、GitHub 仓库或 Magpie 社区分发包；完整性校验不等于安全审计。')}</DialogDescription>
           <div className='space-y-2'><Label htmlFor={`${prefix}-package`}>{t('npm 包名、GitHub 地址或 magpie:包名')}</Label>
             <Input id={`${prefix}-package`} value={install?.name || ''} disabled={busy} autoComplete='off' placeholder='@scope/plugin / https://github.com/owner/repo'
-              onChange={event => { setInstall(value => value ? { ...value, name: event.target.value } : value); setTrusted(false) }} /></div>
+              onChange={event => {
+                const nextValue = event.target.value
+                setInstall(value => value ? { ...value, name: nextValue } : value)
+                setTrusted(false)
+              }} /></div>
           <div className='space-y-2'><Label htmlFor={`${prefix}-version`}>{github ? t('分支、标签或提交（留空使用默认分支）') : t('插件版本（留空使用 latest）')}</Label>
             <Input id={`${prefix}-version`} value={install?.version || ''} disabled={busy} placeholder={github ? t('默认分支') : 'latest'} autoComplete='off'
-              onChange={event => { setInstall(value => value ? { ...value, version: event.target.value } : value); setTrusted(false) }} /></div>
+              onChange={event => {
+                const nextValue = event.target.value
+                setInstall(value => value ? { ...value, version: nextValue } : value)
+                setTrusted(false)
+              }} /></div>
           {github ? <p className='m-0 text-xs leading-relaxed text-muted-foreground'>{t('从 GitHub 官方源下载固定提交。仓库须包含可运行的提供商入口；安装运行依赖，但不执行构建和安装脚本。')}</p> : null}
           {magpie ? <p className='m-0 text-xs leading-relaxed text-muted-foreground'>{t('从 Magpie 社区官方分发目录下载，核验 SHA-512；更新与重装继续使用此来源。')}</p> : null}
           <p className='m-0 text-xs leading-relaxed text-muted-foreground'>{t('也可输入 file: 加网关电脑上的插件目录或 tgz 文件绝对路径；本地插件会复制安装，不修改源目录。')}</p>
