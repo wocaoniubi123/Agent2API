@@ -59,12 +59,9 @@ function DialogOverlay({ className, ...props }: DialogPrimitive.Backdrop.Props) 
       data-slot='dialog-overlay'
       className={cn(
         'fixed inset-0 isolate z-30 bg-mask backdrop-blur-[3px]',
-        // 非开启态一律不拦指针：keepMounted 的弹窗关闭后节点还在，遮罩若保留
-        // pointer-events 就会把整屏点击吃掉（表现是「返回后界面卡死、键盘仍可用」）。
-        'pointer-events-none data-open:pointer-events-auto',
         'transition-opacity duration-150',
         'data-open:animate-in data-open:fade-in-0',
-        'data-closed:animate-out data-closed:fade-out-0 data-closed:fill-mode-forwards',
+        'data-closed:animate-out data-closed:fade-out-0 data-closed:fill-mode-forwards data-closed:pointer-events-none',
         className
       )}
       {...props}
@@ -114,12 +111,10 @@ function DialogContent({
         data-slot='dialog-content'
         className={cn(
           'fixed top-1/2 left-1/2 z-30 flex max-h-[calc(100vh-48px)] w-[min(620px,calc(100vw-48px))] -translate-x-1/2 -translate-y-1/2 flex-col',
-          // 与遮罩同一条规则：关闭后仍驻留的弹窗本体也不许吃点击
-          'pointer-events-none data-open:pointer-events-auto',
           'overflow-hidden rounded-lg border border-border bg-surface shadow-3 outline-none',
           'transition-[opacity,transform] duration-200 [transition-timing-function:cubic-bezier(.2,.9,.3,1)]',
           'data-open:animate-in data-open:fade-in-0 data-open:zoom-in-[.985] data-open:slide-in-from-bottom-2.5',
-          'data-closed:animate-out data-closed:fade-out-0 data-closed:fill-mode-forwards',
+          'data-closed:animate-out data-closed:fade-out-0 data-closed:fill-mode-forwards data-closed:pointer-events-none',
           className
         )}
         {...props}
