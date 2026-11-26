@@ -321,7 +321,11 @@ pub(super) fn pick_release_assets(
         .filter_map(|item| {
             let name = item.get("name")?.as_str()?;
             let target = name.strip_prefix(prefix)?.strip_suffix(suffix)?;
-            if target != super::wasm::manifest::TARGET { return None; }
+            if target != super::wasm::manifest::TARGET
+                && target != crate::server::core::task_plugins::types::TASK_SCRIPT_TARGET
+            {
+                return None;
+            }
             let url = text(item, "browser_download_url");
             if url.is_empty() {
                 return None;
@@ -602,12 +606,9 @@ pub async fn download(
     // 官网守卫：**只对官网与上游 CDN 的插件生效**。自建仓库的资产在 GitHub，路径不可能
     // 落在 `/downloads/plugins/` 或 CDN 的 `/agent2api/plugins/` 下，不跳过这道守卫的话
     // 自建仓库永远下不到包（2026-11-19 合并复核时发现）。
-    if !custom && (!website::trusted_url(&asset.url) || !url::Url::parse(&asset.url).is_ok_and(|url| {
-        let origin = url.origin().ascii_serialization();
-        let valid_path = (origin == website::ORIGIN && url.path().starts_with("/downloads/plugins/"))
-            || (origin == website::CDN_ORIGIN && url.path().starts_with("/agent2api/plugins/"));
-        valid_path && url.query().is_none()
-    })) { return Err("官方插件只能从官网下载，请重新刷新插件列表".to_string()); }
+    if !custom && !website::plugin_download_url(&asset.url) {
+        return Err("官方插件只能从官网下载，请重新刷新插件列表".to_string());
+    }
     crate::server::core::update::assert_downloadable(&asset.url).map_err(|error| error.message)?;
     if asset.size > MAX_PACK_BYTES as u64 {
         return Err(format!("插件包超过 {} MiB 上限", MAX_PACK_BYTES / (1024 * 1024)));

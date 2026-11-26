@@ -44,16 +44,17 @@ pub(super) async fn prepare(path: SelectedPath, url: &str, deadline: HttpDeadlin
     -> Result<(FrozenHttpClient, String), proto::WireError>
 {
     deadline.check()?;
-    let parsed = url::Url::parse(url).map_err(|_| super::invalid("preflight:url"))?;
+    let parsed = url::Url::parse(url).map_err(|_| super::tagged(super::invalid_endpoint(), "preflight:url"))?;
     let origin = parsed.origin().ascii_serialization();
     if !super::ORIGINS.contains(&origin.as_str()) || parsed.path() != super::PATH {
-        return Err(super::invalid(if super::ORIGINS.contains(&origin.as_str()) {
+        return Err(super::tagged(super::invalid_endpoint(), if super::ORIGINS.contains(&origin.as_str()) {
             "preflight:path"
         } else if origin.contains("codebuddy") {
             "preflight:origin-codebuddy"
         } else {
             "preflight:origin-other"
         }));
+    }
     }
     let original = FrozenHttpClient::from_path(path.clone()).await.map_err(|_| super::unavailable())?;
     if probe(&original, &origin, deadline).await {
@@ -70,8 +71,8 @@ pub(super) async fn prepare(path: SelectedPath, url: &str, deadline: HttpDeadlin
         origin.as_str()
     };
     if path.is_direct() {
-        let hostname = url::Url::parse(backup).map_err(|_| super::invalid("preflight:backup-url"))?
-            .host_str().ok_or_else(|| super::invalid("preflight:backup-host"))?.to_string();
+        let hostname = url::Url::parse(backup).map_err(|_| super::tagged(super::invalid_endpoint(), "preflight:backup-url"))?
+            .host_str().ok_or_else(|| super::tagged(super::invalid_endpoint(), "preflight:backup-host"))?.to_string();
         let policy = policy();
         let mut addresses = http_dns::resolve(&policy, &hostname).await;
         addresses.extend(policy.fallback_addresses.iter().filter_map(|ip| ip.parse::<IpAddr>().ok()));
