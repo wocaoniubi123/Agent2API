@@ -410,7 +410,7 @@ fn validate_chat_body(bytes: &[u8]) -> Result<(), proto::WireError> {
             ParseObjectError::TooLarge => payload_too_large(),
             ParseObjectError::DepthExceeded => depth_exceeded(),
             ParseObjectError::DuplicateKey => duplicate_field(),
-            ParseObjectError::Invalid => invalid_body(),
+            ParseObjectError::Invalid => tagged(invalid_body(), "material:parse"),
         })?;
     let mut nodes = 0;
     shape(&value, 0, &mut nodes)?;
@@ -418,7 +418,7 @@ fn validate_chat_body(bytes: &[u8]) -> Result<(), proto::WireError> {
         return Err(non_stream_request());
     }
     if !value["messages"].as_array().is_some_and(|rows| !rows.is_empty()) {
-        return Err(missing_messages());
+        return Err(tagged(missing_messages(), if value["messages"].is_null() { "material:messages-missing" } else { "material:messages-empty" }));
     }
     if !value["model"].as_str().is_some_and(|model| !model.trim().is_empty() && model.len() <= 1024 && !model.chars().any(char::is_control)) {
         return Err(invalid_model());
@@ -455,10 +455,11 @@ fn body_bytes(context: &Context, params: &Value) -> Result<Bytes, proto::WireErr
                 return Err(tagged(invalid_body(), "material:resource-empty"));
             }
             if bytes.len() > MAX_BODY {
-                return Err(payload_too_large());
+                return Err(payload_too_large_at("material:body-size"));
             }
             Ok(bytes)
         }
+        (Some(_), Some(_)) => Err(tagged(invalid_body(), "material:both-channel")),
         _ => Err(tagged(invalid_body(), "material:channel")),
     }
 }
@@ -710,7 +711,7 @@ mod tests {
         assert_eq!(validate_chat_body(non_stream).unwrap_err().message, non_stream_request().message);
 
         let empty_messages = br#"{"stream":true,"model":"m","messages":[]}"#;
-        assert_eq!(validate_chat_body(empty_messages).unwrap_err().message, missing_messages().message);
+        assert_eq!(validate_chat_body(empty_messages).unwrap_err().message, tagged(missing_messages(), "material:messages-empty").message);
 
         let empty_model = br#"{"stream":true,"model":"   ","messages":[{"role":"user","content":"hi"}]}"#;
         assert_eq!(validate_chat_body(empty_model).unwrap_err().message, invalid_model().message);
