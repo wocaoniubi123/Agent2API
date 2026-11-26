@@ -318,9 +318,6 @@ fn route_url(params: &Value) -> Result<Option<String>, proto::WireError> {
     }
     Ok(Some(raw.to_string()))
 }
-    }
-    Ok(Some(raw.to_string()))
-}
 
 fn material(context: &Context, params: &Value, url: String) -> Result<Material, proto::WireError> {
     let (id, trace) = validate_envelope(params)?;

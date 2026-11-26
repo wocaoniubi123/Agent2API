@@ -133,9 +133,10 @@ function cacheTone(prompt: number, cacheRead: number, cacheWrite: number): Metri
   if (cacheRead > 0) {
     if (prompt <= 0) return 'good'
     const pct = (cacheRead / prompt) * 100
-    if (pct >= 70) return 'good'
-    if (pct >= 30) return 'info'
-    return 'warn'
+    // 三档与本 fork「命中率」列同一口径：≥90 绿、80–89 琥珀、<80 红。
+    if (pct >= 90) return 'good'
+    if (pct >= 80) return 'warn'
+    return 'bad'
   }
   return cacheWrite > 0 ? 'info' : ''
 }
@@ -168,8 +169,7 @@ function cacheRateValue(entry: RequestEntry): number | null {
 
 function cacheRateText(entry: RequestEntry): string {
   const rate = cacheRateValue(entry)
-  return rate === null ? '' : `${rate.toFixed(1)}%`
-}
+  return rate === null ? '-' : `${rate.toFixed(2)}%`
 }
 
 export function isOk(entry: RequestEntry): boolean {

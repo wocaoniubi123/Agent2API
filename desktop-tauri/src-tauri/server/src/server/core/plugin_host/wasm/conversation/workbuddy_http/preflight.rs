@@ -55,7 +55,6 @@ pub(super) async fn prepare(path: SelectedPath, url: &str, deadline: HttpDeadlin
             "preflight:origin-other"
         }));
     }
-    }
     let original = FrozenHttpClient::from_path(path.clone()).await.map_err(|_| super::unavailable())?;
     if probe(&original, &origin, deadline).await {
         deadline.check()?;
